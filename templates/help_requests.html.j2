@@ -1,0 +1,33 @@
+{% extends "base.html.j2" %}
+{% block content %}
+{% from "macros/user_macros.html.j2" import user_display %}
+
+<div class="col-md-8 mx-auto pt-4">
+  <h2 class="text-center border-bottom pb-2 mb-4">Help requests</h2>
+
+  {% for req in requests %}
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h5 class="card-title mb-2">
+        <a href="{{ url_for('user_profile', username=req.author) }}">{{ user_display(req.author) }}</a>
+        <small class="text-muted">needs your help</small>
+      </h5>
+
+      <p class="card-text">{{ req.content }}</p>
+
+      <p class="small text-muted mb-3">💡 {{ req.reason }}</p>
+
+      <div class="d-flex gap-2">
+        <a href="{{ url_for('post_detail', post_id=req.post_id) }}" class="btn btn-primary btn-sm">Reply</a>
+        <form action="{{ url_for('decline_help_request', request_id=req.id) }}" method="POST">
+          <button type="submit" class="btn btn-light btn-sm">Not now</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <p class="text-center text-muted">You have no pending help requests.</p>
+  {% endfor %}
+</div>
+
+{% endblock %}

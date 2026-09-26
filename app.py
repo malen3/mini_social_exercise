@@ -391,13 +391,28 @@ def post_detail(post_id):
         comment['content'] = moderated_comment_content
         comments.append(comment)
 
+    # Ask an Expert: help requests for this post (shown to the author)
+    help_requests = query_db('''
+        SELECT h.status, u.username
+        FROM help_requests h
+        JOIN users u ON h.helper_id = u.id
+        WHERE h.post_id = ?
+        ORDER BY h.created_at
+    ''', (post_id,)) or []
+    has_pending = any(r['status'] == 'pending' for r in help_requests)
+    can_ask_expert = False
+    if session.get('user_id') == post['user_id'] and not comments and not has_pending:
+        can_ask_expert = True
+
     # Pass the moderated data to the template
     return render_template('post_detail.html.j2',
                            post=post,
                            reactions=reactions,
                            comments=comments,
                            reaction_emojis=REACTION_EMOJIS,
-                           reaction_types=REACTION_TYPES)
+                           reaction_types=REACTION_TYPES,
+                           help_requests=help_requests,
+                           can_ask_expert=can_ask_expert)
 
 @app.route('/about')
 def about():
@@ -499,6 +514,10 @@ def add_comment(post_id):
                    (post_id, user_id, content))
         db.commit()
         flash('Your comment was added.', 'success')
+        # Ask an Expert: if this user had a pending help request for this post, mark it as accepted
+        cur = query_db("UPDATE help_requests SET status = 'accepted' WHERE post_id = ? AND helper_id = ? AND status = 'pending'", (post_id, user_id), commit=True)
+        if cur is not None and cur.rowcount > 0: 
+            flash('Thanks for helping!', 'success')
     else:
         flash('Comment cannot be empty.', 'warning')
 
@@ -937,6 +956,268 @@ def recommend(user_id, filter_following):
     recommended_posts = {} 
 
     return recommended_posts;
+
+
+
+
+# ----- Feature: Ask an Expert -----
+def init_feature_tables():
+    '''Create the tables used by the Ask an Expert feature if they do not exist yet. '''
+    db = get_db()
+    db.execute('''CREATE TABLE IF NOT EXISTS help_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, 
+    post_id INTEGER NOT NULL, 
+    helper_id INTEGER NOT NULL, 
+    requested_by INTEGER NOT NULL, 
+    reason TEXT NOT NULL, 
+    status TEXT NOT NULL DEFAULT 'pending', 
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+    ''')
+    db.commit()
+
+
+
+
+def extract_hashtags(text):
+    '''
+    Args:
+        text: the content of a post. 
+
+    Returns:
+        A set with the hashtags found in the text, in lowercase and without '#'. 
+        Example: 'I love #Yoga and #yoga' --> {'yoga'}
+    '''
+    text = text.lower()
+    hashtags = re.findall(r'#(\w+)', text)
+    hashtags = set(hashtags)
+    return hashtags
+
+def looks_like_spam(text):
+    '''
+    Args:
+        text: the content of a post. 
+    
+    Returns:
+        True if the text contains any known spam/scam phrase (TIER2_PHRASES), 
+        False otherwise.
+    '''
+    text = text.lower()
+    for phrase in TIER2_PHRASES:
+        if phrase in text:
+            return True
+    return False
+
+def find_expert(post_id):
+    '''
+    Args: 
+        post_id: the ID of the post that needs an answer. 
+    
+    Returns:
+        A tuple (user_id, reason) with the best candidate and a short text explaining why they are chosen, or None if nobody fits.
+
+    How it works:
+        1. Related posts = other posts that share at least one hashtag with this post. 
+        2. Every user gets points for their activity on the related posts: 
+            3 points per comment, 1 point per reaction, +2 if the user and the author follow each other (either direction). 
+        3. Excluded: the author, users already asked for this post (any status), and users who already have a pending request. 
+        4. The highest score wins; on a tie, the lowest user id wins. 
+    '''
+    post = query_db('SELECT id, user_id, content FROM posts WHERE id = ?', (post_id,), one=True)
+    if not post:
+        return None
+    hashtags=extract_hashtags(post['content'])
+    if not hashtags:
+        return None
+    related_ids=set()
+    other_posts=query_db('SELECT id, content FROM posts WHERE id != ?', (post_id, ))
+    for other in other_posts:
+        other_hashtags=extract_hashtags(other['content'])
+        if hashtags & other_hashtags:
+            related_ids.add(other['id']) 
+    excluded= {post['user_id']}
+    asked = query_db('SELECT helper_id FROM help_requests WHERE post_id = ?', (post_id, ))
+    for row in asked:
+        excluded.add(row['helper_id'])
+    pending = query_db ("SELECT helper_id FROM help_requests WHERE status = 'pending'")
+    for row1 in pending:
+        excluded.add(row1['helper_id'])
+
+    # Score every user by their activity on the related posts
+    scores = {}            # user_id -> points
+    commented_posts = {}   # user_id -> set of related post ids they commented on
+    reacted_posts = {}     # user_id -> set of related post ids they reacted to
+
+    # 3 points per comment on a related post
+    comments = query_db('SELECT user_id, post_id FROM comments')
+    for comment in comments:
+        uid = comment['user_id']
+        if comment['post_id'] in related_ids and uid not in excluded:
+            scores[uid] = scores.get(uid, 0) + 3
+            if uid not in commented_posts:
+                commented_posts[uid] = set()
+            commented_posts[uid].add(comment['post_id'])
+
+    # 1 point per reaction on a related post
+    reactions = query_db('SELECT user_id, post_id FROM reactions')
+    for reaction in reactions:
+        uid=reaction['user_id']
+        if reaction['post_id'] in related_ids and uid not in excluded:
+            scores[uid] = scores.get(uid, 0) + 1
+            if uid not in reacted_posts:
+                reacted_posts[uid] = set()
+            reacted_posts[uid].add(reaction['post_id'])
+
+    # +2 if the user and the author follow each other (in either direction)
+    author_id = post['user_id']
+    for uid in scores:
+        follows = query_db(
+            'SELECT 1 FROM follows WHERE (follower_id = ? AND followed_id = ?) '
+            'OR (follower_id = ? AND followed_id = ?)',
+            (uid, author_id, author_id, uid), one=True)
+        if follows:
+            scores[uid] = scores[uid] + 2
+
+    # Pick the user with the highest score (ties: the lowest user id wins)
+    best_id = None
+    best_score = 0
+    for uid in sorted(scores):
+        if scores[uid] > best_score:
+            best_score= scores[uid]
+            best_id = uid
+    if best_id is None:
+        return None
+    tags_text= ', '.join('#' + tag for tag in sorted(hashtags))
+    n_comments = len(commented_posts.get(best_id, set()))
+    if n_comments > 0: 
+        reason = f"You were chosen because you commented on {n_comments} posts about {tags_text}"
+    else:
+        n_reactions = len(reacted_posts.get(best_id, set()))
+        reason = f"You were chosen because you reacted to {n_reactions} posts about {tags_text}"
+    return (best_id, reason)
+
+@app.route('/posts/<int:post_id>/ask-expert', methods=['POST'])
+def ask_expert(post_id):
+    """Handles the 'Ask an expert' button: finds the best helper and saves a help request. """
+    user_id = session.get('user_id')
+
+    # Block access if user is not logged in
+    if not user_id:
+        flash('You must be logged in to ask an expert.', 'danger')
+        return redirect(url_for('login'))
+
+    # Find the post and check that the current user is its author
+    post = query_db('SELECT id, user_id, content FROM posts WHERE id = ?', (post_id,), one=True)
+    if not post:
+        flash('Post not found.', 'danger')
+        return redirect(url_for('feed'))
+    if post['user_id'] != user_id:
+        flash('Only the author of the post can ask an expert.', 'danger')
+        return redirect(url_for('post_detail', post_id=post_id))
+    
+    # Refuse if the post already has comments
+    has_comments = query_db('SELECT 1 FROM comments WHERE post_id = ?', (post_id,), one=True)
+    if has_comments:
+        flash('This post already has replies.', 'info')
+        return redirect(url_for('post_detail', post_id=post_id))
+
+    # Refuse if the post looks like spam
+    if looks_like_spam(post['content']):
+        flash('This post looks like spam, so we cannot ask an expert.', 'warning')
+        return redirect(url_for('post_detail', post_id=post_id))
+
+    # Refuse if this post already has a pending request
+    has_pending = query_db("SELECT 1 FROM help_requests WHERE post_id = ? AND status = 'pending'",
+                           (post_id,), one=True)
+    if has_pending:
+        flash('An expert has already been asked for this post.', 'info')
+        return redirect(url_for('post_detail', post_id=post_id))
+
+    # Find the best expert and save the request
+    result = find_expert(post_id)
+    if result is None:
+        flash('No expert found for these topics.', 'info')
+        return redirect(url_for('post_detail', post_id=post_id))
+
+    helper_id, reason = result
+    db = get_db()
+    db.execute('INSERT INTO help_requests (post_id, helper_id, requested_by, reason) VALUES (?, ?, ?, ?)',
+               (post_id, helper_id, user_id, reason))
+    db.commit()
+
+    helper = query_db('SELECT username FROM users WHERE id = ?', (helper_id,), one=True)
+    flash(f"Request sent to @{helper['username']}", 'success')
+    return redirect(url_for('post_detail', post_id=post_id))
+
+@app.route('/help-requests')
+def my_help_requests():
+    ''' 
+    Shows the logged-in user the help requests they received and have not answered yet.
+    '''
+    user_id=session.get('user_id')
+
+    # Block access if user is not logged in
+    if not user_id:
+        flash('You must be logged in to see your help requests.', 'danger')
+        return redirect(url_for('login'))
+
+    # Pending requests for this user, with the post text and the post author's name
+    requests = query_db('''
+        SELECT h.id, h.post_id, h.reason, p.content, u.username AS author
+        FROM help_requests h
+        JOIN posts p ON h.post_id = p.id
+        JOIN users u ON p.user_id = u.id
+        WHERE h.helper_id = ? AND h.status = 'pending'
+        ORDER BY h.created_at DESC
+    ''', (user_id,)) or []
+
+    return render_template('help_requests.html.j2', requests=requests)
+
+@app.route('/help-requests/<int:request_id>/decline', methods=['POST'])
+def decline_help_request(request_id):
+    """Handles the 'Not now' button: declines the request and passes it on to the next best expert."""
+    user_id = session.get('user_id')
+
+    # Block access if user is not logged in
+    if not user_id:
+        flash('You must be logged in to answer help requests.', 'danger')
+        return redirect(url_for('login'))
+
+    # Find the request and check that it belongs to the current user
+    req = query_db('SELECT id, post_id, helper_id, requested_by, status FROM help_requests WHERE id = ?',
+                   (request_id,), one=True)
+    if not req or req['helper_id'] != user_id:
+        flash('Help request not found.', 'danger')
+        return redirect(url_for('my_help_requests'))
+    if req['status'] != 'pending':
+        flash('This request was already answered.', 'info')
+        return redirect(url_for('my_help_requests'))
+
+    # Mark this request as declined
+    db = get_db()
+    db.execute("UPDATE help_requests SET status = 'declined' WHERE id = ?", (request_id,))
+    db.commit()
+
+    # Pass the request on to the next best expert
+    # (find_expert already excludes everyone who was asked for this post before)
+    result = find_expert(req['post_id'])
+    if result is None:
+        flash('No problem! There is no other expert for this post right now.', 'info')
+    else:
+        next_id, reason = result
+        # Create a new request for the next expert (the author of the post is still the one asking)
+        db.execute('INSERT INTO help_requests (post_id, helper_id, requested_by, reason) VALUES (?, ?, ?, ?)',
+                   (req['post_id'], next_id, req['requested_by'], reason))
+        db.commit()
+        flash('No problem! We passed the request on to another expert.', 'success')
+
+    return redirect(url_for('my_help_requests'))
+
+
+
+with app.app_context():
+    init_feature_tables()
+    
+
 
 if __name__ == '__main__':
     app.run(debug=True, port=8080)

@@ -63,6 +63,22 @@
         {% endif %}
       </div>
 
+      <!-- Ask an Expert (only visible to the author of the post) -->
+      {% if session.get('user_id') == post.user_id %}
+        {% for req in help_requests %}
+          <div class="small text-muted mt-1">
+            Asked <a href="{{ url_for('user_profile', username=req.username) }}">@{{ req.username }}</a>
+            <span class="badge {% if req.status == 'accepted' %}bg-success{% elif req.status == 'declined' %}bg-secondary{% else %}bg-warning text-dark{% endif %}">{{ req.status }}</span>
+          </div>
+        {% endfor %}
+
+        {% if can_ask_expert %}
+          <form action="{{ url_for('ask_expert', post_id=post.id) }}" method="POST" class="mt-2">
+            <button type="submit" class="btn btn-warning btn-sm">Ask an expert</button>
+          </form>
+        {% endif %}
+      {% endif %}
+
       <hr>
 
       <!-- Comments Section -->
