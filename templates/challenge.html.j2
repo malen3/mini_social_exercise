@@ -1,0 +1,69 @@
+{% extends "base.html.j2" %}
+{% block content %}
+
+<div class="col-md-8 mx-auto pt-4">
+  <h2 class="text-center border-bottom pb-2 mb-4">Weekly challenge</h2>
+
+  {% if challenge %}
+  <!-- Active challenge: progress bar and time left (Design Claim 15: frequent feedback) -->
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h5 class="card-title">{{ challenge_types[challenge.challenge_type] }}</h5>
+      <p class="mb-2"><strong>{{ progress }} / {{ challenge.target }}</strong> comments this week</p>
+
+      <div class="progress mb-2" role="progressbar" aria-valuenow="{{ percent }}" aria-valuemin="0" aria-valuemax="100" style="height: 24px;">
+        <div class="progress-bar bg-success" style="width: {{ percent }}%">{{ percent }}%</div>
+      </div>
+
+      <p class="small text-muted mb-0">⏳ Time left: {{ time_left }}</p>
+    </div>
+  </div>
+
+  {% else %}
+  <!-- No active challenge: result of the last one, suggested target and the form (Design Claim 13) -->
+  {% if last %}
+    {% if last.status == 'completed' %}
+    <div class="alert alert-success">
+      🎉 You completed your last challenge ({{ last_progress }} / {{ last.target }}).
+      Ready for something harder? We suggest a target of <strong>{{ suggested }}</strong>.
+    </div>
+    {% else %}
+    <div class="alert alert-secondary">
+      Your last challenge ended at {{ last_progress }} / {{ last.target }}.
+      Let's try a more realistic goal: we suggest a target of <strong>{{ suggested }}</strong>.
+    </div>
+    {% endif %}
+  {% endif %}
+
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h5 class="card-title">Choose your challenge for this week</h5>
+      <form action="{{ url_for('start_challenge') }}" method="POST">
+        {% for key, label in challenge_types.items() %}
+        <div class="form-check">
+          <input class="form-check-input" type="radio" name="challenge_type" id="type-{{ key }}" value="{{ key }}" {% if loop.first %}checked{% endif %}>
+          <label class="form-check-label" for="type-{{ key }}">{{ label }}</label>
+        </div>
+        {% endfor %}
+
+        <label for="target" class="form-label mt-3">Target (comments this week)</label>
+        <select class="form-select" name="target" id="target">
+          {% for t in challenge_targets %}
+          <option value="{{ t }}" {% if t == suggested %}selected{% endif %}>{{ t }}{% if t == suggested %} (suggested){% endif %}</option>
+          {% endfor %}
+        </select>
+
+        <button type="submit" class="btn btn-primary mt-3">Start challenge</button>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- The rules, so the user knows exactly which comments count -->
+  <p class="small text-muted">
+    A comment counts if it has at least {{ min_length }} characters, is not on your own post,
+    and only one comment per post counts.
+  </p>
+</div>
+
+{% endblock %}

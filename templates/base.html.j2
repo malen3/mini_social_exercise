@@ -59,6 +59,7 @@
               <!-- Link to user's profile page -->
               <li><a class="dropdown-item" href="{{ url_for('user_profile', username=session.get('username')) }}">My Profile</a></li>
               <li><a class="dropdown-item" href="{{ url_for('my_help_requests')}}">Help requests</a></li>
+              <li><a class="dropdown-item" href="{{ url_for('challenge_page') }}">Weekly challenge</a></li>
               <li><hr class="dropdown-divider"></li>
               <li><a class="dropdown-item" href="/logout">Logout</a></li>
             </ul>

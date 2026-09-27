@@ -22,6 +22,21 @@
 </div>
 {% endif %}
 
+{% if weekly_challenge %}
+<!-- Weekly Challenge: thin progress bar that links to the challenge page (Design Claim 15) -->
+<div class="col-md-8 mx-auto mb-4">
+  <a href="{{ url_for('challenge_page') }}" class="text-decoration-none">
+    <div class="d-flex justify-content-between small text-muted mb-1">
+      <span>🏁 Weekly challenge: {{ weekly_label }}</span>
+      <span>{{ weekly_progress }} / {{ weekly_challenge.target }}</span>
+    </div>
+    <div class="progress" style="height: 8px;">
+      <div class="progress-bar bg-success" style="width: {{ weekly_percent }}%"></div>
+    </div>
+  </a>
+</div>
+{% endif %}
+
 <h2 class="text-center border-bottom pb-2 mb-4"><span>Posts</span></h2>
 
 <div class="mb-4 text-center">

@@ -6,7 +6,7 @@ import json
 import sqlite3
 import hashlib
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 app = Flask(__name__)
 app.secret_key = '123456789' 
@@ -191,15 +191,31 @@ def feed():
             'comments': comments_moderated
         })
 
-    #  4. Render Template with Pagination Info 
-    return render_template('feed.html.j2', 
-                           posts=posts_data, 
+    # Weekly Challenge: small progress bar above the posts (Design Claim 15)
+    weekly_challenge = None
+    weekly_progress = 0
+    weekly_percent = 0
+    weekly_label = ''
+    if current_user_id:
+        weekly_challenge = get_active_challenge(current_user_id)
+    if weekly_challenge:
+        weekly_progress = challenge_progress(weekly_challenge)
+        weekly_percent = min(100, int(weekly_progress / weekly_challenge['target'] * 100))
+        weekly_label = CHALLENGE_TYPES[weekly_challenge['challenge_type']]
+
+    #  4. Render Template with Pagination Info
+    return render_template('feed.html.j2',
+                           posts=posts_data,
                            current_sort=sort,
                            current_show=show,
                            page=page, # Pass current page number
                            per_page=POSTS_PER_PAGE, # Pass items per page
                            reaction_emojis=REACTION_EMOJIS,
-                           reaction_types=REACTION_TYPES)
+                           reaction_types=REACTION_TYPES,
+                           weekly_challenge=weekly_challenge,
+                           weekly_progress=weekly_progress,
+                           weekly_percent=weekly_percent,
+                           weekly_label=weekly_label)
 
 @app.route('/posts/new', methods=['POST'])
 def add_post():
@@ -510,14 +526,26 @@ def add_comment(post_id):
     # Basic validation to ensure comment is not empty
     if content and content.strip():
         db = get_db()
+        # Weekly Challenge: remember the progress before this comment (to know later if it counted)
+        challenge = get_active_challenge(user_id)
+        progress_before = challenge_progress(challenge) if challenge else 0
+
         db.execute('INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)',
                    (post_id, user_id, content))
         db.commit()
         flash('Your comment was added.', 'success')
         # Ask an Expert: if this user had a pending help request for this post, mark it as accepted
         cur = query_db("UPDATE help_requests SET status = 'accepted' WHERE post_id = ? AND helper_id = ? AND status = 'pending'", (post_id, user_id), commit=True)
-        if cur is not None and cur.rowcount > 0: 
+        if cur is not None and cur.rowcount > 0:
             flash('Thanks for helping!', 'success')
+
+        # Weekly Challenge: feedback right after the comment (Design Claim 15)
+        if challenge:
+            progress_after = challenge_progress(challenge)
+            if progress_after > progress_before:   # the new comment counted
+                flash(f"Challenge progress: {progress_after} / {challenge['target']}", 'success')
+                if update_challenge_status(challenge) == 'completed':
+                    flash('Challenge completed! 🎉', 'success')
     else:
         flash('Comment cannot be empty.', 'warning')
 
@@ -1216,6 +1244,307 @@ def decline_help_request(request_id):
 
 with app.app_context():
     init_feature_tables()
+
+
+# ----- Feature: Weekly Challenge -----
+
+# Settings 
+CHALLENGE_DURATION = timedelta(days=7)
+CHALLENGE_TYPES = {
+    'strangers': "Comment on posts from people I don't follow",
+    'topics': "Comment on posts with hashtags that are new to me",
+    'quiet': "Be the first to comment on a post",
+}
+CHALLENGE_TARGETS = [3, 5, 10]
+MIN_COMMENT_LENGTH = 20
+
+def utc_now():
+    """Return the current time in UTC, without timezone info (like the dates SQLite gives us)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+def to_db_time(dt):
+    """Convert a datetime to the text format SQLite uses: 'YYYY-MM-DD HH:MM:SS'."""
+    return dt.strftime('%Y-%m-%d %H:%M:%S')
+
+def challenge_hashtags(text):
+    '''
+    Own copy of the hashtag helper, so this feature does not depend on Feature 1.
+
+    Args:
+        text: the content of a post.
+
+    Returns:
+        A set with the hashtags found in the text, in lowercase and without '#'.
+        Example: 'I love #Yoga and #yoga' --> {'yoga'}
+    '''
+    text = text.lower()
+    hashtags = re.findall(r'#(\w+)', text)
+    hashtags = set(hashtags)
+    return hashtags
+
+
+def init_challenge_tables():
+    '''Create the table used by the Weekly Challenge feature if it does not exist yet.'''
+    db = get_db()
+    db.execute('''CREATE TABLE IF NOT EXISTS weekly_challenges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, 
+    user_id INTEGER NOT NULL, 
+    challenge_type TEXT NOT NULL, 
+    target INTEGER NOT NULL, 
+    start_date TIMESTAMP NOT NULL, 
+    end_date TIMESTAMP NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active')
+    ''')
+    db.commit()
+
+def challenge_progress(challenge):
+    '''
+    Args:
+        challenge: a row of the weekly_challenges table.
+    
+    Returns: 
+        The number of different posts where the user made a comment that counts for this challenge.
+        Progress is never stored: it is always recalculated from the comments table.
+    '''
+    user_id = challenge['user_id']
+    start = to_db_time(challenge['start_date'])
+    end = to_db_time(challenge['end_date'])
+
+    # The user's comments made during the challenge, with the author of each post
+    comments = query_db('''
+        SELECT c.id, c.post_id, c.content, p.user_id AS author_id, p.content AS post_content
+        FROM comments c
+        JOIN posts p ON c.post_id = p.id
+        WHERE c.user_id = ? AND c.created_at >= ? AND c.created_at <= ?
+        ORDER BY c.id
+    ''', (user_id, start, end)) or []
+
+    # Data needed by the rule of the challenge type (prepared once, before the loop)
+    challenge_type = challenge['challenge_type']
+    followed = set()   # ids of the users this user follows
+    if challenge_type == 'strangers':
+        rows = query_db('SELECT followed_id FROM follows WHERE follower_id = ?', (user_id,)) or []
+        for row in rows:
+            followed.add(row['followed_id'])
+
+    known_tags = set()   # hashtags of posts the user commented on BEFORE the challenge
+    if challenge_type == 'topics':
+        rows = query_db('''
+            SELECT p.content
+            FROM comments c
+            JOIN posts p ON c.post_id = p.id
+            WHERE c.user_id = ? AND c.created_at < ?
+        ''', (user_id, start)) or []
+        for row in rows:
+            known_tags.update(challenge_hashtags(row['content']))
+
+    counted_posts = set()   # a set, so each post counts only once (general rule 3)
+    for comment in comments:
+        long_enough = False
+        not_own_post = False
+
+        # General rule 1: the comment must be long enough (spaces at the ends do not count)
+        if len(comment['content'].strip()) >= MIN_COMMENT_LENGTH:
+            long_enough = True
+
+        # General rule 2: comments on the user's own posts do not count
+        if comment['author_id'] != user_id:
+            not_own_post = True
+
+        # Rule of the challenge type
+        type_rule = False
+        if challenge_type == 'strangers':
+            # The author of the post must NOT be someone the user follows
+            if comment['author_id'] not in followed:
+                type_rule = True
+        elif challenge_type == 'topics':
+            # The post must have at least one hashtag that is new to the user
+            new_tags = challenge_hashtags(comment['post_content']) - known_tags
+            if new_tags:
+                type_rule = True
+        elif challenge_type == 'quiet':
+            # The user's comment must be the first comment on that post (lowest id)
+            first = query_db('SELECT MIN(id) AS first_id FROM comments WHERE post_id = ?', (comment['post_id'],), one=True)
+            if first and first['first_id'] == comment['id']:
+                type_rule = True
+
+        if long_enough and not_own_post and type_rule:
+            counted_posts.add(comment['post_id'])
+
+    return len(counted_posts)
+
+
+def update_challenge_status(challenge):
+    '''
+    Args:
+        challenge: a row of the weekly_challenges table.
+
+    Returns:
+        The status of the challenge after checking it: 'active', 'completed' or 'failed'.
+        If the status changed, it is also saved in the database.
+    '''
+    # Only active challenges can change
+    if challenge['status'] != 'active':
+        return challenge['status']
+
+    progress = challenge_progress(challenge)
+    new_status = 'active'
+
+    # Completed is checked first: reaching the target wins even if the time is over
+    if progress >= challenge['target']:
+        new_status = 'completed'
+    elif utc_now() > challenge['end_date']:
+        new_status = 'failed'
+
+    # Save the change (query_db, so the app keeps working even if the table is missing)
+    if new_status != 'active':
+        query_db('UPDATE weekly_challenges SET status = ? WHERE id = ?', (new_status, challenge['id']), commit=True)
+
+    return new_status
+
+def get_active_challenge(user_id):
+    '''
+    Args:
+        user_id: the ID of a user.
+
+    Returns:
+        The user's active challenge (a row of weekly_challenges), or None if they have none.
+        The status is checked first, so a challenge that just finished is not returned.
+    '''
+    # Read the user's challenge with status 'active' (one row, the newest one)
+    challenge = query_db("SELECT * FROM weekly_challenges WHERE user_id = ? AND status = 'active' ORDER BY id DESC",
+                         (user_id,), one=True)
+    if challenge is None:
+        return None
+
+    # If the challenge has just been completed or has failed, it is not active anymore
+    if update_challenge_status(challenge) != 'active':
+        return None
+
+    return challenge
+
+
+def suggested_target(user_id):
+    '''
+    Args:
+        user_id: the ID of a user.
+
+    Returns:
+        The target suggested for the user's next challenge (Design Claim 13: challenging but realistic):
+        one level up after a completed challenge, one level down after a failed one,
+        and the easiest target if the user never finished a challenge.
+    '''
+    # The last finished challenge (completed or failed)
+    last = query_db("SELECT target, status FROM weekly_challenges WHERE user_id = ? AND status != 'active' ORDER BY id DESC",
+                    (user_id,), one=True)
+    if last is None:
+        return CHALLENGE_TARGETS[0]
+
+    # Work with the position of the target in the list: [3, 5, 10] -> positions 0, 1, 2
+    position = CHALLENGE_TARGETS.index(last['target'])
+    if last['status'] == 'completed':
+        # One level up, unless it is already the hardest target
+        if position < len(CHALLENGE_TARGETS) - 1:
+            position = position + 1
+    else:
+        # One level down, unless it is already the easiest target
+        if position > 0:
+            position = position - 1
+
+    return CHALLENGE_TARGETS[position]
+
+
+def format_time_left(end_date):
+    """Return the time left until end_date as a short text, e.g. '6 days 23 hours' or '2 minutes'."""
+    seconds = int((end_date - utc_now()).total_seconds())
+    if seconds < 60:
+        return 'less than a minute'
+    days = seconds // 86400             # 86400 seconds in a day
+    hours = (seconds % 86400) // 3600   # 3600 seconds in an hour
+    minutes = (seconds % 3600) // 60
+    if days > 0:
+        return f'{days} days {hours} hours'
+    if hours > 0:
+        return f'{hours} hours {minutes} minutes'
+    return f'{minutes} minutes'
+
+
+@app.route('/challenge')
+def challenge_page():
+    """Shows the user's weekly challenge: its progress if one is active, otherwise the form to start one."""
+    user_id = session.get('user_id')
+
+    # Block access if user is not logged in
+    if not user_id:
+        flash('You must be logged in to see your weekly challenge.', 'danger')
+        return redirect(url_for('login'))
+
+    # The active challenge (if any), with its progress and time left (Design Claim 15: feedback)
+    challenge = get_active_challenge(user_id)
+    progress = 0
+    percent = 0
+    time_left = None
+    if challenge:
+        progress = challenge_progress(challenge)
+        percent = min(100, int(progress / challenge['target'] * 100))   # for the progress bar (0-100)
+        time_left = format_time_left(challenge['end_date'])
+
+    # The last finished challenge (to show its result) and the suggested next target (Design Claim 13)
+    last = query_db("SELECT * FROM weekly_challenges WHERE user_id = ? AND status != 'active' ORDER BY id DESC",
+                    (user_id,), one=True)
+    last_progress = challenge_progress(last) if last else 0
+
+    return render_template('challenge.html.j2',
+                           challenge=challenge,
+                           progress=progress,
+                           percent=percent,
+                           time_left=time_left,
+                           last=last,
+                           last_progress=last_progress,
+                           suggested=suggested_target(user_id),
+                           challenge_types=CHALLENGE_TYPES,
+                           challenge_targets=CHALLENGE_TARGETS,
+                           min_length=MIN_COMMENT_LENGTH)
+
+
+
+@app.route('/challenge/start', methods=['POST'])
+def start_challenge():
+    """Handles the form on the challenge page: creates a new weekly challenge for the logged-in user."""
+    user_id = session.get('user_id')
+
+    # Block access if user is not logged in
+    if not user_id:
+        flash('You must be logged in to start a challenge.', 'danger')
+        return redirect(url_for('login'))
+
+    # Read and validate the form (never trust what comes from a form)
+    challenge_type = request.form.get('challenge_type')
+    try:
+        target = int(request.form.get('target', ''))
+    except ValueError:
+        target = None
+    if challenge_type not in CHALLENGE_TYPES or target not in CHALLENGE_TARGETS:
+        flash('Please choose a valid challenge and target.', 'warning')
+        return redirect(url_for('challenge_page'))
+
+    # Refuse if the user already has an active challenge
+    if get_active_challenge(user_id):
+        flash('You already have an active challenge.', 'info')
+        return redirect(url_for('challenge_page'))
+
+    # Save the new challenge (dates in UTC, in the same text format as comments.created_at)
+    start = utc_now()
+    end = start + CHALLENGE_DURATION
+    query_db('INSERT INTO weekly_challenges (user_id, challenge_type, target, start_date, end_date) VALUES (?, ?, ?, ?, ?)',
+             (user_id, challenge_type, target, to_db_time(start), to_db_time(end)), commit=True)
+
+    flash(f"Challenge started: {CHALLENGE_TYPES[challenge_type]} ({target} times). Good luck!", 'success')
+    return redirect(url_for('challenge_page'))
+
+
+with app.app_context():
+    init_challenge_tables()
     
 
 
