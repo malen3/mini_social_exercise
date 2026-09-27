@@ -1,0 +1,102 @@
+{% extends "base.html.j2" %}
+{% block content %}
+
+<div class="col-md-8 mx-auto pt-4">
+  <h2 class="text-center border-bottom pb-2 mb-4">Your impact</h2>
+
+  <!-- Period selector: the active period is highlighted -->
+  <div class="text-center mb-4">
+    <div class="btn-group" role="group" aria-label="Choose a period">
+      <a href="{{ url_for('impact_page', period='7d') }}" class="btn {% if period == '7d' %}btn-primary{% else %}btn-light{% endif %}">Last 7 days</a>
+      <a href="{{ url_for('impact_page', period='30d') }}" class="btn {% if period == '30d' %}btn-primary{% else %}btn-light{% endif %}">Last 30 days</a>
+      <a href="{{ url_for('impact_page', period='all') }}" class="btn {% if period == 'all' %}btn-primary{% else %}btn-light{% endif %}">All time</a>
+    </div>
+  </div>
+
+  {% if has_impact %}
+
+  <!-- Three summary numbers, based only on real data (Design Claim 18) -->
+  <div class="row text-center mb-4">
+    <div class="col-md-4 mb-3">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <div class="display-6">{{ summary.reactions_received }}</div>
+          <div class="small text-muted">
+            {% if period == 'all' %}reactions on your posts{% else %}reactions on posts you published in this period{% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-4 mb-3">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <div class="display-6">{{ summary.replies_received }}</div>
+          <div class="small text-muted">replies from others on your posts</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-4 mb-3">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <div class="display-6">{{ summary.comments_written }}</div>
+          <div class="small text-muted">comments you wrote</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Highlights: specific, sincere praise (Design Claim 18) -->
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h5 class="card-title">Conversations you started</h5>
+      {% for h in highlights %}
+        <p class="mb-2">
+          💬 Your comment on <a href="{{ url_for('user_profile', username=h.author) }}">@{{ h.author }}</a>'s
+          <a href="{{ url_for('post_detail', post_id=h.post_id) }}">post</a>
+          was followed by <strong>{{ h.count }}</strong> more comment{% if h.count != 1 %}s{% endif %}.
+        </p>
+      {% else %}
+        <p class="text-muted mb-0">None of your comments has started a conversation in this period yet.</p>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Next to catch: compare only with the person just above (Design Claim 21) -->
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h5 class="card-title">Next to catch</h5>
+      {% if catch %}
+        <p>
+          You are <strong>{{ catch[3] }}</strong> contribution{% if catch[3] != 1 %}s{% endif %} behind
+          <a href="{{ url_for('user_profile', username=catch[0]) }}">@{{ catch[0] }}</a>.
+        </p>
+        <div class="d-flex justify-content-between small text-muted mb-1">
+          <span>You: {{ catch[2] }}</span>
+          <span>@{{ catch[0] }}: {{ catch[1] }}</span>
+        </div>
+        <div class="progress" role="progressbar" aria-valuenow="{{ catch_percent }}" aria-valuemin="0" aria-valuemax="100" style="height: 20px;">
+          <div class="progress-bar bg-success" style="width: {{ catch_percent }}%"></div>
+        </div>
+      {% else %}
+        <p class="mb-0">🏆 You're the most active contributor in this period.</p>
+      {% endif %}
+      <p class="small text-muted mt-3 mb-0">
+        Contributions = your posts + your comments of at least {{ min_length }} characters on other people's posts.
+      </p>
+    </div>
+  </div>
+
+  {% else %}
+
+  <!-- Honest empty state (Design Claim 18): no praise when there is nothing real to show -->
+  <div class="card shadow-sm text-center">
+    <div class="card-body">
+      <p class="mb-3">No impact yet in this period.</p>
+      <a href="{{ url_for('feed') }}" class="btn btn-primary btn-sm">Go to the feed</a>
+    </div>
+  </div>
+
+  {% endif %}
+</div>
+
+{% endblock %}

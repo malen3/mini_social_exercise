@@ -1545,7 +1545,210 @@ def start_challenge():
 
 with app.app_context():
     init_challenge_tables()
-    
+
+
+# ----- Feature: Your Impact -----
+# (No new table: this feature only reads users, posts, comments and reactions.)
+
+# Setting: own constant, so this feature does not depend on Feature 2
+IMPACT_MIN_COMMENT_LENGTH = 20
+
+
+def period_start(period):
+    '''
+    Args:
+        period: '7d', '30d' or 'all' (any other value is treated as 'all').
+
+    Returns:
+        The UTC start date of the period as text 'YYYY-MM-DD HH:MM:SS'
+        (same format as SQLite CURRENT_TIMESTAMP), or None for 'all'.
+    '''
+    if period == '7d':
+        days = 7
+    elif period == '30d':
+        days = 30
+    else:
+        return None     # 'all' or an unknown value: no start date
+
+    start = datetime.now(timezone.utc) - timedelta(days=days)
+    return start.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def impact_summary(user_id, since):
+    '''
+    Args:
+        user_id: the ID of the user.
+        since: start date as text 'YYYY-MM-DD HH:MM:SS', or None for all time.
+
+    Returns:
+        A dictionary with three numbers:
+        - reactions_received: reactions by other users on the user's posts
+          (reactions have no date, so for a period we count reactions on posts published in it)
+        - replies_received: comments by other users on the user's posts, written in the period
+        - comments_written: the user's own comments written in the period
+    '''
+    since = since or '1970-01-01 00:00:00'   # None means all time
+
+    reactions = query_db('''
+        SELECT COUNT(*) AS n
+        FROM reactions r
+        JOIN posts p ON r.post_id = p.id
+        WHERE p.user_id = ? AND r.user_id != ? AND p.created_at >= ?
+    ''', (user_id, user_id, since), one=True)
+
+    replies = query_db('''
+        SELECT COUNT(*) AS n
+        FROM comments c
+        JOIN posts p ON c.post_id = p.id
+        WHERE p.user_id = ? AND c.user_id != ? AND c.created_at >= ?
+    ''', (user_id, user_id, since), one=True)
+
+    written = query_db('SELECT COUNT(*) AS n FROM comments WHERE user_id = ? AND created_at >= ?',
+                       (user_id, since), one=True)
+
+    return {
+        'reactions_received': reactions['n'] if reactions else 0,
+        'replies_received': replies['n'] if replies else 0,
+        'comments_written': written['n'] if written else 0,
+    }
+
+
+def impact_highlights(user_id, since):
+    '''
+    Args:
+        user_id: the ID of the user.
+        since: start date as text 'YYYY-MM-DD HH:MM:SS', or None for all time.
+
+    Returns:
+        Up to 3 highlights (the best first), each a dictionary with post_id, author and count:
+        how many comments OTHER users wrote on that post after the user's first comment
+        ("conversation started"). Only real highlights (count >= 1) are included (Design Claim 18).
+    '''
+    since = since or '1970-01-01 00:00:00'   # None means all time
+
+    # The user's first comment on each post of OTHER people during the period, with the post author
+    my_comments = query_db('''
+        SELECT c.post_id, MIN(c.id) AS first_id, u.username AS author
+        FROM comments c
+        JOIN posts p ON c.post_id = p.id
+        JOIN users u ON p.user_id = u.id
+        WHERE c.user_id = ? AND c.created_at >= ? AND p.user_id != ?
+        GROUP BY c.post_id
+    ''', (user_id, since, user_id)) or []
+
+    highlights = []
+    for row in my_comments:
+        # Comments by OTHER users on the same post, written after the user's first comment (higher id)
+        later = query_db('SELECT COUNT(*) AS n FROM comments WHERE post_id = ? AND user_id != ? AND id > ?',
+                         (row['post_id'], user_id, row['first_id']), one=True)
+        # Only real highlights: at least one other person continued the conversation
+        if later and later['n'] >= 1:
+            highlights.append({'post_id': row['post_id'], 'author': row['author'], 'count': later['n']})
+
+    # The best highlights first, and only the top 3
+    highlights.sort(key=lambda h: h['count'], reverse=True)
+    return highlights[:3]
+
+def contribution_scores(since):
+    '''
+    Args:
+        since: start date as text 'YYYY-MM-DD HH:MM:SS', or None for all time.
+
+    Returns:
+        A dictionary {user_id: {'username': ..., 'score': ...}} for every user with at least
+        one contribution in the period. Score = posts + comments that are long enough and
+        not on the user's own posts. The 'admin' account is excluded.
+    '''
+    since = since or '1970-01-01 00:00:00'   # None means all time
+
+    # One row per post and one row per valid comment (UNION ALL keeps every row),
+    # then GROUP BY counts the rows of each user
+    rows = query_db("""
+        SELECT a.user_id, u.username, COUNT(*) AS score
+        FROM (
+            SELECT user_id FROM posts WHERE created_at >= ?
+            UNION ALL
+            SELECT c.user_id
+            FROM comments c
+            JOIN posts p ON c.post_id = p.id
+            WHERE c.created_at >= ? AND LENGTH(TRIM(c.content)) >= ? AND p.user_id != c.user_id
+        ) AS a
+        JOIN users u ON a.user_id = u.id
+        WHERE u.username != 'admin'
+        GROUP BY a.user_id
+    """, (since, since, IMPACT_MIN_COMMENT_LENGTH)) or []
+
+    # Turn the rows into a dictionary: user_id -> {'username': ..., 'score': ...}
+    scores = {}
+    for row in rows:
+        scores[row['user_id']] = {'username': row['username'], 'score': row['score']}
+    return scores
+
+def next_to_catch(user_id, since):
+    '''
+    Args:
+        user_id: the ID of the user.
+        since: start date as text 'YYYY-MM-DD HH:MM:SS', or None for all time.
+
+    Returns:
+        (username, their_score, my_score, difference) for the user with the SMALLEST score
+        that is STRICTLY HIGHER than mine (Design Claim 21: an achievable comparison, never
+        the #1 or a full ranking), or None if nobody is above me.
+    '''
+    scores = contribution_scores(since)
+    my_score = scores[user_id]['score'] if user_id in scores else 0   # no contributions -> 0
+
+    # Look for the smallest score that is strictly higher than mine
+    # (sorted by username, so on a tie the first name in alphabetical order wins)
+    best = None
+    for info in sorted(scores.values(), key=lambda i: i['username']):
+        if info['score'] > my_score and (best is None or info['score'] < best['score']):
+            best = info
+
+    if best is None:
+        return None     # nobody is above me in this period
+    return (best['username'], best['score'], my_score, best['score'] - my_score)
+
+@app.route('/impact')
+def impact_page():
+    '''Shows the logged-in user the real impact of their contributions (Design Claims 18 and 21).'''
+    user_id = session.get('user_id')
+
+    # Block access if user is not logged in
+    if not user_id:
+        flash('You must be logged in to see your impact.', 'danger')
+        return redirect(url_for('login'))
+
+    # The period from the URL: /impact?period=7d | 30d | all (anything else is treated as 'all')
+    period = request.args.get('period', 'all')
+    if period not in ('7d', '30d', 'all'):
+        period = 'all'
+    since = period_start(period)
+
+    # The data of the page (only the logged-in user's own data)
+    summary = impact_summary(user_id, since)
+    highlights = impact_highlights(user_id, since)
+    catch = next_to_catch(user_id, since)
+
+    # Honest empty state (Design Claim 18): no praise and no comparison if all numbers are 0
+    has_impact = any(summary.values())
+
+    # Percentage for the "next to catch" progress bar: my score compared to theirs
+    catch_percent = 0
+    if catch:
+        catch_percent = min(100, int(catch[2] / catch[1] * 100))   # catch = (name, their, mine, diff)
+
+    return render_template('impact.html.j2',
+                           period=period,
+                           summary=summary,
+                           highlights=highlights,
+                           catch=catch,
+                           catch_percent=catch_percent,
+                           has_impact=has_impact,
+                           min_length=IMPACT_MIN_COMMENT_LENGTH)
+
+
+
 
 
 if __name__ == '__main__':
