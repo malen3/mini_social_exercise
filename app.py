@@ -930,12 +930,52 @@ def user_risk_analysis(user_id):
             password: admin
         Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
-    
-    score = 0
 
-    return score;
+    # Read the user's profile text and the date the account was created
+    user = query_db('SELECT profile, created_at FROM users WHERE id = ?', (user_id,), one=True)
+    if user is None:
+        return 0.0
 
-    
+    # Step 1: profile score
+    _, profile_score = moderate_content(user['profile'])
+
+    # Step 2: average post score (0 if the user has no posts)
+    posts = query_db('SELECT content FROM posts WHERE user_id = ?', (user_id,)) or []
+    average_post_score = 0.0
+    if posts:
+        total = 0.0
+        for post in posts:
+            _, post_score = moderate_content(post['content'])
+            total = total + post_score
+        average_post_score = total / len(posts)
+
+    # Step 3: average comment score (0 if the user has no comments)
+    average_comment_score = 0.0
+    comments = query_db('SELECT content FROM comments WHERE user_id = ?', (user_id,)) or []
+    if comments:
+        total = 0.0
+        for comment in comments:
+            _, comment_score = moderate_content(comment['content'])
+            total = total + comment_score
+        average_comment_score = total / len(comments)
+
+    # Step 4: combine the scores (posts count three times)
+    content_risk_score = (profile_score * 1) + (average_post_score * 3) + (average_comment_score * 1)
+
+    # Step 5: newer accounts are riskier
+    now = datetime.now(timezone.utc).replace(tzinfo=None)   # current time in UTC, like created_at
+    age_days = (now - user['created_at']).days if user['created_at'] else 9999
+    user_risk_score = content_risk_score
+    # Less than 7 days is checked first (a 3-day-old account is also "less than 30 days")
+    if age_days < 7:
+        user_risk_score = user_risk_score * 1.5
+    elif age_days < 30:
+        user_risk_score = user_risk_score * 1.2
+
+    # Step 6: the final score is capped at 5.0
+    return min(user_risk_score, 5.0)
+
+
 # Assignment 2.1
 def moderate_content(content):
     """
