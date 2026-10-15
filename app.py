@@ -954,9 +954,51 @@ def moderate_content(content):
     Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
 
+    # Nothing to moderate (for example, an empty profile)
+    if not content:
+        return content, 0.0
+
+    # Rule 1.1.1: Tier 1 words (severe violations) -> remove the whole content, score 5.0
+    # (\b = word boundary, so only whole words count; IGNORECASE = upper/lower case does not matter)
+    for word in TIER1_WORDS:
+        if re.search(r'\b' + re.escape(word) + r'\b', content, re.IGNORECASE):
+            return ('[content removed due to severe violation]', 5.0)
+
+    # Rule 1.1.2: Tier 2 phrases (spam/scam) -> remove the whole content, score 5.0
+    # (only checked if there was no Tier 1 match, because the Tier 1 loop returns first)
+    for phrase in TIER2_PHRASES:
+        if re.search(r'\b' + re.escape(phrase) + r'\b', content, re.IGNORECASE):
+            return ('[content removed due to spam/scam policy]', 5.0)
+
+    # Start with the original text and a score of 0 (Stage 1.2: scored violations)
     moderated_content = content
-    score = 0
-    
+    score = 0.0
+
+    # Rule 1.2.1: Tier 3 words (mild profanity) -> replace with asterisks, +2.0 for each match
+    for word in TIER3_WORDS:
+        pattern = r'\b' + re.escape(word) + r'\b'
+        matches = re.findall(pattern, moderated_content, re.IGNORECASE)
+        score = score + 2.0 * len(matches)
+        moderated_content = re.sub(pattern, '*' * len(word), moderated_content, flags=re.IGNORECASE)
+
+    # Rule 1.2.2: external links -> replace with [link removed], +2.0 for each link
+    url_pattern = r'(https?://\S+|www\.\S+|\b[a-z0-9-]+\.(?:com|net|org|io|ly|co|info|biz|me)\b(?:/\S*)?)'
+    matches = re.findall(url_pattern, moderated_content, re.IGNORECASE)
+    score = score + 2.0 * len(matches)
+    moderated_content = re.sub(url_pattern, '[link removed]', moderated_content, flags=re.IGNORECASE)
+
+    # Rule 1.2.3: excessive capitalization -> +0.5 (the text is not changed)
+    letters = 0      
+    uppercase = 0
+    for ch in content:
+        if ch.isalpha():
+            letters = letters + 1
+            if ch.isupper():
+                uppercase = uppercase + 1
+    # letters > 15 is checked first, so we never divide by 0
+    if letters > 15 and uppercase / letters > 0.7:
+        score = score + 0.5
+
     return moderated_content, score
 
 # Coding Assignment #3
@@ -1189,7 +1231,7 @@ def my_help_requests():
         return redirect(url_for('login'))
 
     # Pending requests for this user, with the post text and the post author's name
-    requests = query_db('''
+    rows = query_db('''
         SELECT h.id, h.post_id, h.reason, p.content, u.username AS author
         FROM help_requests h
         JOIN posts p ON h.post_id = p.id
@@ -1197,6 +1239,13 @@ def my_help_requests():
         WHERE h.helper_id = ? AND h.status = 'pending'
         ORDER BY h.created_at DESC
     ''', (user_id,)) or []
+
+    # Moderate the post text before showing it (Assignment 2: moderate_content)
+    requests = []
+    for row in rows:
+        req = dict(row)
+        req['content'], _ = moderate_content(req['content'])
+        requests.append(req)
 
     return render_template('help_requests.html.j2', requests=requests)
 
