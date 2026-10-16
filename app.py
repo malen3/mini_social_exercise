@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, redirect, url_for, session, flash, g
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import collections
 import json
 import sqlite3
@@ -1837,6 +1838,33 @@ def impact_page():
                            catch_percent=catch_percent,
                            has_impact=has_impact,
                            min_length=IMPACT_MIN_COMMENT_LENGTH)
+
+
+# ----- Feature: Tone Coach + Consequences (Assignment 2, Chapter 4) -----
+# Design Claim 20: remind people of the norms at the moment they act.
+
+# One shared VADER analyzer for the whole app (creating it is slow, so I do it only once)
+tone_analyzer = SentimentIntensityAnalyzer()
+
+
+def get_tone(text):
+    '''
+    Args:
+        text: the text the user is writing.
+
+    Returns:
+        (sentiment, tone): the VADER compound value (from -1 to +1) and
+        'negative' (<= -0.5), 'positive' (>= 0.5) or 'neutral'.
+    '''
+    sentiment = tone_analyzer.polarity_scores(text)['compound']
+    if sentiment <= -0.5:
+        tone = 'negative'
+    elif sentiment >= 0.5:
+        tone = 'positive'
+    else:
+        tone = 'neutral'
+    return sentiment, tone
+
 
 
 
