@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 app = Flask(__name__)
 app.secret_key = '123456789' 
 DATABASE = 'database.sqlite'
+# Escape user text in every template (the templates end in .html.j2, so Flask does not do it by itself)
+app.jinja_env.autoescape = True
 
 # Load censorship data
 # WARNING! The censorship.dat file contains disturbing language when decrypted. 
