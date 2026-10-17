@@ -1,0 +1,84 @@
+/* Tone Coach (Assignment 2, Design Claim 20): the colours and the style of the live panel */
+
+/* The panel: a white box with round corners and a soft shadow, under the text box */
+.tc-panel {
+  margin-top: .75rem;
+  margin-bottom: .75rem;
+  padding: .85rem 1rem;
+  border-radius: 14px;
+  background: #fbfcfd;
+  border: 1px solid rgba(0, 0, 0, .08);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .06);
+}
+
+/* The top line: the title on the left, the pills next to it */
+.tc-head {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  font-weight: 600;
+  color: #495057;
+}
+
+/* A "pill": a small rounded label with a coloured background */
+.tc-pill {
+  font-size: .75rem;
+  font-weight: 700;
+  padding: .25em .7em;
+  border-radius: 999px;
+  color: #fff;
+}
+
+/* Tone colours: red = negative, grey = neutral, green = positive */
+.tc-tone-negative { background: #e5484d; }
+.tc-tone-neutral  { background: #8c959f; }
+.tc-tone-positive { background: #30a46c; }
+
+/* Risk colours (the same levels as /admin): grey, yellow, orange, red */
+.tc-risk-none   { background: #8c959f; }
+.tc-risk-low    { background: #f2c94c; color: #3d3200; }
+.tc-risk-medium { background: #f2994a; }
+.tc-risk-high   { background: #dc3545; }
+
+/* "How others will see it:": small grey capital letters */
+.tc-preview-label {
+  margin-top: .75rem;
+  font-size: .75rem;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: #8c959f;
+}
+
+/* The preview: a white box with a dashed border, like a "draft" */
+.tc-preview {
+  margin-top: .25rem;
+  padding: .5rem .75rem;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px dashed rgba(0, 0, 0, .15);
+  white-space: pre-wrap;      /* keep the line breaks of the text */
+  word-break: break-word;     /* long words do not break the box */
+}
+
+/* The whole message would be removed: a red box with white letters */
+.tc-preview.tc-removed {
+  background: #dc3545;
+  color: #fff;
+  font-weight: 700;
+  border: none;
+}
+
+/* The list of problems: no bullets, small letters */
+.tc-issues {
+  list-style: none;
+  padding: 0;
+  margin: .5rem 0 0;
+  font-size: .875rem;
+}
+.tc-issues li { padding: .15rem 0; }
+
+/* "✓ Looks good!" in green */
+.tc-issues .tc-ok {
+  color: #1e7e34;
+  font-weight: 600;
+}

@@ -13,6 +13,8 @@
   <link rel="icon" type="image/png" href="{{ url_for('static', filename='icon.png') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='custom_style.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='switch.css') }}">
+  <!-- Tone Coach (Assignment 2): the colours of the live panel -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='tone_coach.css') }}">
 
 </head>
 <body class="bg-light">
@@ -109,6 +111,9 @@
 
 <!-- Bootstrap 5 JS Bundle (includes Popper) -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
+<!-- Tone Coach (Assignment 2): load static/tone_coach.js -->
+<script src="{{ url_for('static', filename='tone_coach.js') }}"></script>
+
 
 {% include "footer.html.j2" %}
 </body>

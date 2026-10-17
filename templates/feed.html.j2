@@ -11,10 +11,15 @@
   <div class="card shadow-sm">
     <div class="card-body">
       <h5 class="card-title">Create a new post</h5>
-      <form action="{{ url_for('add_post') }}" method="POST">
+      <!-- Tone Coach (Design Claim 20): static/tone_coach.js will draw a live panel in this form -->
+      <!-- data-tone-coach="full": the mark the JavaScript looks for ("full" = the big panel) -->
+      <form action="{{ url_for('add_post') }}" method="POST" data-tone-coach="full">
         <div class="mb-3">
           <textarea class="form-control" name="content" rows="3" placeholder="What's on your mind, {{ session.get('username') }}?" required></textarea>
         </div>
+        <!-- The empty box where the JavaScript draws the panel (hidden until the user writes something) -->
+        <div class="tc-panel" hidden></div>
+
         <button type="submit" class="btn btn-primary float-end">Post</button>
       </form>
     </div>
