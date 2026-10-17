@@ -192,11 +192,14 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
-          <form action="/posts/{{ entry.post.id }}/comment" method="POST">
+          <!-- Tone Coach (Design Claim 20): data-tone-coach="compact" = the small live panel -->
+          <form action="/posts/{{ entry.post.id }}/comment" method="POST" data-tone-coach="compact">
             <div class="mb-3">
               <label for="comment-content-{{ entry.post.id }}" class="form-label">Your Comment</label>
               <textarea class="form-control" id="comment-content-{{ entry.post.id }}" name="content" rows="3" required></textarea>
             </div>
+            <!-- The empty box where the JavaScript draws the panel (hidden until the user writes something) -->
+            <div class="tc-panel tc-compact" hidden></div>
             <button type="submit" class="btn btn-primary">Submit Comment</button>
           </form>
         </div>

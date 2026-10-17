@@ -77,6 +77,13 @@
 }
 .tc-issues li { padding: .15rem 0; }
 
+/* The small version for the comments (class tc-compact): less space and smaller letters */
+.tc-panel.tc-compact {
+  padding: .6rem .75rem;
+  font-size: .9rem;
+}
+.tc-compact .tc-issues { font-size: .8rem; }
+
 /* "✓ Looks good!" in green */
 .tc-issues .tc-ok {
   color: #1e7e34;
