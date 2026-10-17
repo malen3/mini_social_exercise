@@ -109,6 +109,37 @@
   </div>
 </div>
 
+{% if session.get('user_id') %}
+<!-- Tone Coach: the "Before you post…" window (Design Claim 20: a reminder at the moment of acting).
+     It is hidden until static/tone_coach.js opens it; the preview and the reasons are filled in by the JavaScript. -->
+<div class="modal fade" id="tcConfirmModal" tabindex="-1" aria-labelledby="tcConfirmTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="tcConfirmTitle">Before you post…</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-muted mb-1">This is how others will see your message:</p>
+        <!-- Empty: the JavaScript puts here the moderated text -->
+        <div class="tc-preview" id="tcConfirmPreview"></div>
+        <!-- Empty: the JavaScript puts here the list of problems -->
+        <ul class="tc-issues mt-3" id="tcConfirmReasons"></ul>
+        <p class="small text-muted mt-3 mb-0">
+          MiniSocial is a friendly place: no insults, no spam and no links.
+          <a href="{{ url_for('rules') }}" target="_blank">Read the rules</a>
+        </p>
+      </div>
+      <div class="modal-footer">
+        <!-- Nudge: "Post anyway" is small and grey, "Edit my message" is big and blue -->
+        <button type="button" class="btn btn-link text-muted" id="tcPostAnyway">Post anyway</button>
+        <button type="button" class="btn btn-primary" id="tcEditMessage">Edit my message</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <!-- Bootstrap 5 JS Bundle (includes Popper) -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" crossorigin="anonymous"></script>
 <!-- Tone Coach (Assignment 2): load static/tone_coach.js -->
