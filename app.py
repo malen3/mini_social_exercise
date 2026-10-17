@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash, g
+from flask import Flask, render_template, request, redirect, url_for, session, flash, g, jsonify
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -722,6 +722,20 @@ def unfollow_user(user_id):
     # Redirect back to the page the user came from
     return redirect(request.referrer or url_for('feed'))
 
+# Risk thresholds, shared by /admin and the Tone Coach
+# (moved out of admin_dashboard so both use exactly the same rules)
+RISK_LEVELS = { "HIGH": 5, "MEDIUM": 3, "LOW": 1 }
+
+def get_risk_profile(score):
+    """Turn a risk score into (label, sort_key): >=5 HIGH, >=3 MEDIUM, >=1 LOW, otherwise NONE."""
+    if score >= RISK_LEVELS["HIGH"]:
+        return "HIGH", 3
+    elif score >= RISK_LEVELS["MEDIUM"]:
+        return "MEDIUM", 2
+    elif score >= RISK_LEVELS["LOW"]:
+        return "LOW", 1
+    return "NONE", 0
+
 @app.route('/admin')
 def admin_dashboard():
     """Displays the admin dashboard with users, posts, and comments, sorted by risk."""
@@ -730,17 +744,7 @@ def admin_dashboard():
         flash("You do not have permission to access this page.", "danger")
         return redirect(url_for('feed'))
 
-    RISK_LEVELS = { "HIGH": 5, "MEDIUM": 3, "LOW": 1 }
     PAGE_SIZE = 50
-
-    def get_risk_profile(score):
-        if score >= RISK_LEVELS["HIGH"]:
-            return "HIGH", 3
-        elif score >= RISK_LEVELS["MEDIUM"]:
-            return "MEDIUM", 2
-        elif score >= RISK_LEVELS["LOW"]:
-            return "LOW", 1
-        return "NONE", 0
 
     # Get pagination and current tab parameters
     try:
@@ -979,6 +983,25 @@ def user_risk_analysis(user_id):
     return min(user_risk_score, 5.0)
 
 
+# Pattern that detects a link (http/https, www. or a domain with a common ending).
+# It is a constant so moderate_content() and the Tone Coach use exactly the same rule.
+URL_PATTERN = r'(https?://\S+|www\.\S+|\b[a-z0-9-]+\.(?:com|net|org|io|ly|co|info|biz|me)\b(?:/\S*)?)'
+
+def has_too_many_capitals(text):
+    '''
+    Rule 1.2.3 (used by moderate_content() and by the Tone Coach).
+    Returns True if the text has more than 15 letters and more than 70% of them are uppercase.
+    '''
+    letters = 0       # how many letters the text has
+    uppercase = 0     # how many of them are uppercase
+    for ch in text:
+        if ch.isalpha():
+            letters = letters + 1
+            if ch.isupper():
+                uppercase = uppercase + 1
+    # More than 15 letters AND more than 70% uppercase (letters > 15 is checked first, so we never divide by 0)
+    return letters > 15 and uppercase / letters > 0.7
+
 # Assignment 2.1
 def moderate_content(content):
     """
@@ -1025,21 +1048,12 @@ def moderate_content(content):
         moderated_content = re.sub(pattern, '*' * len(word), moderated_content, flags=re.IGNORECASE)
 
     # Rule 1.2.2: external links -> replace with [link removed], +2.0 for each link
-    url_pattern = r'(https?://\S+|www\.\S+|\b[a-z0-9-]+\.(?:com|net|org|io|ly|co|info|biz|me)\b(?:/\S*)?)'
-    matches = re.findall(url_pattern, moderated_content, re.IGNORECASE)
+    matches = re.findall(URL_PATTERN, moderated_content, re.IGNORECASE)
     score = score + 2.0 * len(matches)
-    moderated_content = re.sub(url_pattern, '[link removed]', moderated_content, flags=re.IGNORECASE)
+    moderated_content = re.sub(URL_PATTERN, '[link removed]', moderated_content, flags=re.IGNORECASE)
 
     # Rule 1.2.3: excessive capitalization -> +0.5 (the text is not changed)
-    letters = 0      
-    uppercase = 0
-    for ch in content:
-        if ch.isalpha():
-            letters = letters + 1
-            if ch.isupper():
-                uppercase = uppercase + 1
-    # letters > 15 is checked first, so we never divide by 0
-    if letters > 15 and uppercase / letters > 0.7:
+    if has_too_many_capitals(content):
         score = score + 0.5
 
     return moderated_content, score
@@ -1864,6 +1878,83 @@ def get_tone(text):
     else:
         tone = 'neutral'
     return sentiment, tone
+
+
+def analyze_text(text):
+    '''
+    The "engine" of the Tone Coach (Design Claim 20): it joins moderate_content() and get_tone().
+
+    Args:
+        text: the text the user is writing (a post or a comment).
+
+    Returns:
+        A dictionary with how the text would be moderated and how its tone sounds.
+    '''
+    # Empty text: a neutral result, without errors
+    if not text or not text.strip():
+        return {'moderated': '', 'score': 0.0, 'risk_label': 'NONE', 'removed': False, 'censored': False,
+                'sentiment': 0.0, 'tone': 'neutral', 'needs_warning': False, 'issues': []}
+
+    # How the text would be moderated (the same moderation others will see)
+    moderated, score = moderate_content(text)
+
+    # The tone of the text, measured by VADER
+    sentiment, tone = get_tone(text)
+
+    # Censored = the moderation changed something (asterisks, [link removed] or the whole text removed)
+    censored = moderated != text
+
+    # The risk label of the score, with the same thresholds as /admin (the _ ignores the sort key)
+    risk_label, _ = get_risk_profile(score)
+
+    # Removed = the whole text was replaced by the Tier 1 or Tier 2 message
+    removed = moderated == '[content removed due to severe violation]' or moderated == '[content removed due to spam/scam policy]'
+
+    # The list of problems to show to the user (never the real Tier 1 / Tier 2 words, only the reason)
+    issues = []
+    if removed:
+        # Removed by Tier 1 ("severe violation") or by Tier 2 ("spam/scam policy")
+        reason = 'severe' if 'severe' in moderated else 'spam'
+        issues.append({'type': 'removed', 'reason': reason})
+    else:
+        # Every Tier 3 word found in the original text
+        for word in TIER3_WORDS:
+            # All the matches of this word (whole words, any case), like in moderate_content
+            found =re.findall(r'\b' + re.escape(word) + r'\b', text, re.IGNORECASE)
+            for match in found:
+                issues.append({'type': 'word', 'text': match})
+
+        # Every link found in the original text (the same URL_PATTERN as moderate_content)
+        links = re.findall(URL_PATTERN, text, re.IGNORECASE)
+        for link in links:
+            issues.append({'type': 'link', 'text': link})
+
+        # Too many capital letters (rule 1.2.3)
+        if has_too_many_capitals(text):
+            issues.append({'type': 'caps'})
+
+
+    # Warn the user if the text would be censored OR it sounds very negative
+    needs_warning = censored or tone == 'negative'
+
+    return {'moderated': moderated, 'score': score, 'risk_label': risk_label, 'removed': removed,
+            'censored': censored, 'sentiment': sentiment, 'tone': tone, 'needs_warning': needs_warning,
+            'issues': issues}
+
+
+@app.route('/api/tone-check', methods=['POST'])
+def tone_check():
+    '''Live check for the Tone Coach panel: receives {"text": "..."} and returns analyze_text() as JSON.'''
+    # Only for logged-in users (401 = "you are not logged in")
+    if not session.get('user_id'):
+        return jsonify({'error': 'You must be logged in.'}), 401
+
+    # Read the text sent by the browser (if there is no JSON or no text, use an empty text)
+    data = request.get_json(silent=True) or {}
+    text = data.get('text') or ''
+
+    # Analyze the text and send the result back to the browser as JSON
+    return jsonify(analyze_text(text))
 
 
 
