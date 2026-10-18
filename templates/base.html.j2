@@ -63,6 +63,10 @@
               <li><a class="dropdown-item" href="{{ url_for('my_help_requests')}}">Help requests</a></li>
               <li><a class="dropdown-item" href="{{ url_for('challenge_page') }}">Weekly challenge</a></li>
               <li><a class="dropdown-item" href="{{ url_for('impact_page') }}">My impact</a></li>
+              <!-- Tone Coach (Design Claim 31): the coloured dot shows the user's level -->
+              <li><a class="dropdown-item" href="{{ url_for('standing_page') }}">
+                <span class="tc-dot tc-dot-{{ tone_status.level if tone_status else 'good' }}"></span> My standing
+              </a></li>
 
               <li><hr class="dropdown-divider"></li>
               <li><a class="dropdown-item" href="/logout">Logout</a></li>
@@ -110,6 +114,9 @@
 </div>
 
 {% if session.get('user_id') %}
+<!-- Tone Coach (Design Claim 31): the seconds of cooldown left, read by tone_coach.js for the countdown -->
+<div id="tc-status" data-cooldown="{{ tone_status.cooldown_seconds if tone_status else 0 }}" hidden></div>
+
 <!-- Tone Coach: the "Before you post…" window (Design Claim 20: a reminder at the moment of acting).
      It is hidden until static/tone_coach.js opens it; the preview and the reasons are filled in by the JavaScript. -->
 <div class="modal fade" id="tcConfirmModal" tabindex="-1" aria-labelledby="tcConfirmTitle" aria-hidden="true">

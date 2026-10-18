@@ -230,6 +230,12 @@ def add_post():
         flash('You must be logged in to create a post.', 'danger')
         return redirect(url_for('login'))
 
+    # Tone Coach (Design Claim 31): a cooldown or a suspension stops the post BEFORE it is saved
+    block = posting_block_message(user_id)
+    if block:
+        flash(block, 'warning')
+        return redirect(url_for('feed'))
+
     # Get content from the submitted form
     content = request.form.get('content')
 
@@ -239,9 +245,12 @@ def add_post():
     # Basic validation to ensure post is not empty
     if moderated_content and moderated_content.strip():
         db = get_db()
-        db.execute('INSERT INTO posts (user_id, content) VALUES (?, ?)',
+        # cur = the "receipt" of the INSERT: cur.lastrowid is the id of the new post
+        cur = db.execute('INSERT INTO posts (user_id, content) VALUES (?, ?)',
                    (user_id, moderated_content))
         db.commit()
+        # Tone Coach: write it in the diary and, if it comes out censored, give a strike (Design Claim 31)
+        tone_after_posting(user_id, 'post', cur.lastrowid, content, request.form.get('coach_action'))
         flash('Your post was successfully created!', 'success')
     else:
         # This will catch empty posts or posts that were fully censored
@@ -523,6 +532,12 @@ def add_comment(post_id):
         flash('You must be logged in to comment.', 'danger')
         return redirect(url_for('login'))
 
+    # Tone Coach (Design Claim 31): a cooldown or a suspension stops the comment BEFORE it is saved
+    block = posting_block_message(user_id)
+    if block:
+        flash(block, 'warning')
+        return redirect(request.referrer or url_for('post_detail', post_id=post_id))
+
     # Get content from the submitted form
     content = request.form.get('content')
 
@@ -533,9 +548,12 @@ def add_comment(post_id):
         challenge = get_active_challenge(user_id)
         progress_before = challenge_progress(challenge) if challenge else 0
 
-        db.execute('INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)',
+        # cur = the "receipt" of the INSERT: cur.lastrowid is the id of the new comment
+        cur = db.execute('INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)',
                    (post_id, user_id, content))
         db.commit()
+        # Tone Coach: write it in the diary and, if it comes out censored, give a strike (Design Claim 31)
+        tone_after_posting(user_id, 'comment', cur.lastrowid, content, request.form.get('coach_action'))
         flash('Your comment was added.', 'success')
         # Ask an Expert: if this user had a pending help request for this post, mark it as accepted
         cur = query_db("UPDATE help_requests SET status = 'accepted' WHERE post_id = ? AND helper_id = ? AND status = 'pending'", (post_id, user_id), commit=True)
@@ -763,6 +781,10 @@ def admin_dashboard():
     # First, get all users to calculate risk, then apply pagination in Python
     # It's more complex to do this efficiently in SQL if risk calc is Python-side
     all_users_raw = query_db('SELECT id, username, profile, created_at FROM users')
+    # Tone Coach (Design Claim 31): active strikes of every user with ONE query ({user_id: number})
+    active_strikes = {row['user_id']: row['n'] for row in
+                      (query_db('SELECT user_id, COUNT(*) AS n FROM strikes WHERE created_at >= ? GROUP BY user_id',
+                                (strikes_window_start(),)) or [])}
     all_users = []
     for user in all_users_raw:
         user_dict = dict(user)
@@ -771,6 +793,9 @@ def admin_dashboard():
         user_dict['risk_label'] = risk_label
         user_dict['risk_sort_key'] = risk_sort_key
         user_dict['risk_score'] = min(5.0, round(user_risk_score, 2))
+        # Tone Coach: the user's level (emoji + label) and number of active strikes
+        strikes = active_strikes.get(user_dict['id'], 0)
+        user_dict['standing'] = dict(STANDING_LEVELS[min(strikes, MAX_STRIKES)], strikes=strikes)
         all_users.append(user_dict)
 
     all_users.sort(key=lambda x: x['risk_score'], reverse=True)
@@ -1851,7 +1876,9 @@ def impact_page():
                            catch=catch,
                            catch_percent=catch_percent,
                            has_impact=has_impact,
-                           min_length=IMPACT_MIN_COMMENT_LENGTH)
+                           min_length=IMPACT_MIN_COMMENT_LENGTH,
+                           # Tone Coach card (Assignment 2): what the user did with the warnings
+                           tone=tone_coach_summary(user_id))
 
 
 # ----- Feature: Tone Coach + Consequences (Assignment 2, Chapter 4) -----
@@ -1955,6 +1982,272 @@ def tone_check():
 
     # Analyze the text and send the result back to the browser as JSON
     return jsonify(analyze_text(text))
+
+
+# ----- Consequences (Design Claim 31: graduated sanctions) -----
+
+# Settings of the sanctions
+STRIKE_EXPIRY_DAYS = 7     # a strike stops counting after 7 days
+COOLDOWN_MINUTES = 10      # with 2 active strikes: one post or comment every 10 minutes
+MAX_STRIKES = 3            # with 3 active strikes, posting is suspended
+
+# The 4 levels, from 0 active strikes to 3 or more (position in the list = number of strikes)
+STANDING_LEVELS = [
+    {'level': 'good', 'emoji': '🟢', 'label': 'Good',
+     'meaning': 'You can post and comment normally.'},
+    {'level': 'warning', 'emoji': '🟡', 'label': 'Warning',
+     'meaning': 'You can still post. Two more strikes and you will be restricted.'},
+    {'level': 'cooldown', 'emoji': '🟠', 'label': 'Cooldown',
+     'meaning': f'You can post or comment once every {COOLDOWN_MINUTES} minutes.'},
+    {'level': 'suspended', 'emoji': '🔴', 'label': 'Suspended',
+     'meaning': 'Posting is paused until your oldest strike expires.'},
+]
+
+def init_tone_coach_tables():
+    '''Create the 2 tables of the Tone Coach if they do not exist yet.'''
+    db = get_db()
+
+    # One row every time someone publishes a post or a comment: what they did with the Tone Coach
+    db.execute('''CREATE TABLE IF NOT EXISTS tone_coach_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    content_type TEXT NOT NULL,
+    coach_action TEXT NOT NULL,
+    moderation_score REAL NOT NULL,
+    sentiment REAL NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+    ''')
+
+    # One row every time someone publishes something that comes out censored (a "strike")
+    db.execute('''CREATE TABLE IF NOT EXISTS strikes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,  
+    content_type TEXT NOT NULL,
+    content_id INTEGER NOT NULL, 
+    reason TEXT NOT NULL, 
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
+    ''')
+    db.commit()
+
+with app.app_context():
+    init_tone_coach_tables()
+
+
+def tone_after_posting(user_id, content_type, content_id, content, coach_action):
+    '''After a post or a comment is saved: write it in the diary (tone_coach_log)
+    and, if the text comes out censored, give the user a strike (Design Claim 31).
+    content_type is 'post' or 'comment'; content_id is the id of the new post or comment.'''
+    # Only these 3 values are allowed (anyone could change the hidden field in the browser)
+    if coach_action not in ('clean', 'edited', 'override'):
+        coach_action = 'clean'
+
+    # The same analysis as the live panel (moderate_content + VADER)
+    result = analyze_text(content)
+
+    # 1. The diary: one row for EVERY post or comment
+    query_db('INSERT INTO tone_coach_log (user_id, content_type, coach_action, moderation_score, sentiment) VALUES (?, ?, ?, ?, ?)',
+             (user_id, content_type, coach_action, result['score'], result['sentiment']), commit=True)
+
+    # 2. The strike: ONLY if the published text comes out censored (and never for the admin)
+    if result['censored'] and not is_admin_user(user_id):
+        # The reason of the strike, in a few words (never the real Tier 1 / Tier 2 words)
+        if result['removed']:
+            reason = 'Content removed (' + result['issues'][0]['reason'] + ')'
+        else:
+            reasons = []
+            if any(issue['type'] == 'word' for issue in result['issues']):
+                reasons.append('mild profanity')
+            if any(issue['type'] == 'link' for issue in result['issues']):
+                reasons.append('link')
+            reason = 'Censored: ' + ', '.join(reasons)
+
+        # Save the strike
+        query_db('INSERT INTO strikes (user_id, content_type, content_id, reason) VALUES (?, ?, ?, ?)',
+                 (user_id, content_type, content_id, reason), commit=True)
+        # Tell the user right away (transparency: they know why and how many strikes they have)
+        flash(f"⚠ Your {content_type} came out censored, so you received a strike "
+              f"({get_active_strikes(user_id)}/{MAX_STRIKES}). See 'My standing' in the menu.", 'warning')
+
+
+def strikes_window_start():
+    '''The moment from which strikes still count: now minus STRIKE_EXPIRY_DAYS.
+    As text in UTC, the same format as CURRENT_TIMESTAMP in SQLite ('2026-10-17 18:30:00'),
+    so SQL can compare it with created_at.'''
+    start = datetime.now(timezone.utc) - timedelta(days=STRIKE_EXPIRY_DAYS)
+    return start.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def to_datetime(value):
+    '''SQLite can give a date as a datetime or as text (for example with MIN or MAX): always return a datetime.'''
+    if value is None or isinstance(value, datetime):
+        return value
+    return datetime.strptime(str(value)[:19], '%Y-%m-%d %H:%M:%S')
+
+
+def get_active_strikes(user_id):
+    '''How many strikes the user got in the last STRIKE_EXPIRY_DAYS days (older ones have expired).'''
+    row = query_db('SELECT COUNT(*) AS n FROM strikes WHERE user_id = ? AND created_at >= ?',
+                   (user_id, strikes_window_start()), one=True)
+    return row['n'] if row else 0
+
+
+def get_standing(user_id):
+    '''The user's level (Design Claim 31): a copy of one of the STANDING_LEVELS, plus
+    strikes (how many are active) and next_expiry (when the oldest active strike expires,
+    so the level goes down; None if there are no strikes).'''
+    strikes = get_active_strikes(user_id)
+    # 0 -> good, 1 -> warning, 2 -> cooldown, 3 or more -> suspended (min: never past the last level)
+    standing = dict(STANDING_LEVELS[min(strikes, MAX_STRIKES)])
+    standing['strikes'] = strikes
+    standing['next_expiry'] = None
+
+    if strikes > 0:
+        # The oldest active strike: when it is 7 days old, it expires
+        row = query_db('SELECT MIN(created_at) AS oldest FROM strikes WHERE user_id = ? AND created_at >= ?',
+                       (user_id, strikes_window_start()), one=True)
+        if row and row['oldest']:
+            standing['next_expiry'] = to_datetime(row['oldest']) + timedelta(days=STRIKE_EXPIRY_DAYS)
+    return standing
+
+
+def is_admin_user(user_id):
+    '''The admin account never gets strikes or restrictions.'''
+    row = query_db('SELECT username FROM users WHERE id = ?', (user_id,), one=True)
+    return row is not None and row['username'] == 'admin'
+
+
+def get_posting_status(user_id):
+    '''The standing plus what it means RIGHT NOW (Design Claim 31):
+    cooldown_seconds = seconds to wait before the next post or comment (only at "cooldown", otherwise 0),
+    suspended_until  = until when posting is paused (only at "suspended", otherwise None).'''
+    if is_admin_user(user_id):
+        # The admin is always "good"
+        status = dict(STANDING_LEVELS[0], strikes=0, next_expiry=None)
+    else:
+        status = get_standing(user_id)
+    status['cooldown_seconds'] = 0
+    status['cooldown_minutes'] = COOLDOWN_MINUTES
+    status['suspended_until'] = None
+
+    if status['level'] == 'suspended':
+        status['suspended_until'] = status['next_expiry']
+    elif status['level'] == 'cooldown':
+        # When did the user last post or comment? (the newest date of both tables together)
+        row = query_db('''SELECT MAX(created_at) AS last FROM (
+                              SELECT created_at FROM posts WHERE user_id = ?
+                              UNION ALL
+                              SELECT created_at FROM comments WHERE user_id = ?)''',
+                       (user_id, user_id), one=True)
+        last = to_datetime(row['last']) if row else None
+        if last:
+            # Seconds since then; if it is less than COOLDOWN_MINUTES, the rest has to be waited
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            waited = (now - last).total_seconds()
+            status['cooldown_seconds'] = max(0, int(COOLDOWN_MINUTES * 60 - waited))
+    return status
+
+
+def posting_block_message(user_id):
+    '''The check that really counts, on the server (the browser can be changed, the server cannot).
+    Returns a message if the user cannot post right now, or None if they can.'''
+    status = get_posting_status(user_id)
+    if status['suspended_until']:
+        until = status['suspended_until'].strftime('%b %d, %Y %H:%M')
+        return (f"🔴 Posting is paused until {until} (UTC) because you have {status['strikes']} active strikes. "
+                "See 'My standing' in the menu.")
+    if status['cooldown_seconds'] > 0:
+        # Round up: 30 seconds left -> "1 minute"
+        minutes = (status['cooldown_seconds'] + 59) // 60
+        return (f"🟠 You are in a cooldown: you can post or comment again in {minutes} minute(s). "
+                "See 'My standing' in the menu.")
+    return None
+
+
+@app.route('/standing')
+def standing_page():
+    '''"My standing" (Design Claim 31): the user's level, the active strikes and when they expire.
+    Being open about the rules and the sanctions makes them feel fair.'''
+    user_id = session.get('user_id')
+    if not user_id:
+        flash('You must be logged in to see your standing.', 'danger')
+        return redirect(url_for('login'))
+
+    standing = get_posting_status(user_id)
+
+    # The active strikes, newest first, each one with how many days are left until it expires
+    rows = query_db('SELECT content_type, reason, created_at FROM strikes WHERE user_id = ? AND created_at >= ? ORDER BY created_at DESC',
+                    (user_id, strikes_window_start())) or []
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    strikes = []
+    for row in rows:
+        created = to_datetime(row['created_at'])
+        expires = created + timedelta(days=STRIKE_EXPIRY_DAYS)
+        # Days left, rounded up (1.2 days -> 2 days)
+        days_left = max(0, -(-(expires - now).total_seconds() // 86400))
+        strikes.append({'content_type': row['content_type'], 'reason': row['reason'],
+                        'created_at': created, 'expires_in_days': int(days_left)})
+
+    return render_template('standing.html.j2', standing=standing, strikes=strikes,
+                           levels=STANDING_LEVELS, max_strikes=MAX_STRIKES, expiry_days=STRIKE_EXPIRY_DAYS)
+
+
+def tone_coach_summary(user_id):
+    '''Data for the "Tone Coach" card on the Your Impact page (from the diary, tone_coach_log):
+    how many times the coach warned the user, how many times they rewrote the message ("edited")
+    or posted anyway ("override"), and the average tone of their last 20 messages.'''
+    # How many rows of each coach_action ({'clean': 12, 'edited': 3, 'override': 1})
+    rows = query_db('SELECT coach_action, COUNT(*) AS n FROM tone_coach_log WHERE user_id = ? GROUP BY coach_action',
+                    (user_id,)) or []
+    counts = {row['coach_action']: row['n'] for row in rows}
+    edited = counts.get('edited', 0)
+    override = counts.get('override', 0)
+    # Every warning ended in "edited" or in "override"
+    warned = edited + override
+
+    # The average tone (VADER) of the last 20 messages
+    recent = query_db('SELECT sentiment FROM tone_coach_log WHERE user_id = ? ORDER BY id DESC LIMIT 20',
+                      (user_id,)) or []
+    average = round(sum(row['sentiment'] for row in recent) / len(recent), 2) if recent else 0.0
+    # The same thresholds as get_tone()
+    if average <= -0.5:
+        tone = 'negative'
+    elif average >= 0.5:
+        tone = 'positive'
+    else:
+        tone = 'neutral'
+
+    return {
+        'warned': warned,
+        'edited': edited,
+        'override': override,
+        'rewrite_percent': round(edited / warned * 100) if warned else 0,
+        'messages': len(recent),
+        'average': average,
+        'tone': tone,
+        # Position on the tone bar: -1 -> 0 %, 0 -> 50 %, +1 -> 100 %
+        'marker_percent': round((average + 1) / 2 * 100),
+    }
+
+
+@app.route('/admin/strikes/<int:user_id>/clear', methods=['POST'])
+def admin_clear_strikes(user_id):
+    '''Lets the admin remove all the strikes of a user (for example, after a mistake of the filter).'''
+    if session.get('username') != 'admin':
+        flash('You do not have permission to perform this action.', 'danger')
+        return redirect(url_for('feed'))
+    query_db('DELETE FROM strikes WHERE user_id = ?', (user_id,), commit=True)
+    flash(f'The strikes of user {user_id} have been cleared.', 'success')
+    return redirect(request.referrer or url_for('admin_dashboard'))
+
+
+@app.context_processor
+def inject_tone_status():
+    '''Makes tone_status (level, cooldown, suspension) available in EVERY template,
+    so the forms can show a notice or be replaced when the user is restricted.'''
+    user_id = session.get('user_id')
+    if not user_id:
+        return {'tone_status': None}
+    return {'tone_status': get_posting_status(user_id)}
 
 
 

@@ -84,6 +84,85 @@
 }
 .tc-compact .tc-issues { font-size: .8rem; }
 
+/* ---------- Consequences (Design Claim 31) ---------- */
+
+/* The notice above the post form: yellow for "warning", orange for "cooldown" */
+.tc-notice { border-radius: 12px; border: none; }
+.tc-notice-warning  { background: #fff8db; color: #5c4a00; }
+.tc-notice-cooldown { background: #ffeedd; color: #7a3d00; }
+
+/* The red card shown instead of the form when posting is suspended */
+.tc-suspended {
+  border: none;
+  border-radius: 16px;
+  color: #fff;
+  background: linear-gradient(135deg, #dc3545, #b02a37);
+}
+.tc-suspended .card-title { color: #fff; }
+
+/* The small coloured dot of the level (menu, admin, standing page) */
+.tc-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: .35rem; vertical-align: middle; }
+.tc-dot-good      { background: #30a46c; }
+.tc-dot-warning   { background: #f2c94c; }
+.tc-dot-cooldown  { background: #f2994a; }
+.tc-dot-suspended { background: #dc3545; }
+
+/* ---------- The "My standing" page ---------- */
+
+/* The 4 levels in a row; the current one is big, the others are faded and grey */
+.tc-ladder { display: flex; gap: .75rem; flex-wrap: wrap; }
+.tc-step {
+  flex: 1 1 140px; text-align: center; padding: 1rem .75rem; border-radius: 16px;
+  background: #fff; border: 1px solid rgba(0, 0, 0, .06);
+  opacity: .45; filter: grayscale(.6);
+}
+.tc-step .tc-step-emoji { font-size: 1.8rem; line-height: 1.2; }
+.tc-step .tc-step-name { font-weight: 700; margin-top: .25rem; }
+.tc-step .tc-step-text { font-size: .8rem; color: #6c757d; margin-top: .25rem; }
+.tc-step.tc-current {
+  opacity: 1; filter: none; transform: scale(1.06);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .12);
+}
+.tc-step.tc-current .tc-step-emoji { font-size: 2.6rem; }
+.tc-step-arrow { align-self: center; color: #adb5bd; font-size: 1.2rem; }
+
+/* The strikes as a timeline: a grey line with an orange dot for each strike */
+.tc-timeline { list-style: none; padding-left: 1.25rem; margin: 0; border-left: 3px solid #e9ecef; }
+.tc-timeline li { position: relative; padding: 0 0 1rem .75rem; }
+.tc-timeline li::before {
+  content: ''; position: absolute; left: -1.62rem; top: .3rem;
+  width: 14px; height: 14px; border-radius: 50%; background: #f2994a; border: 3px solid #fff;
+  box-shadow: 0 0 0 2px #f2994a;
+}
+.tc-expires { font-size: .8rem; color: #6c757d; }
+
+/* ---------- The Tone Coach card on the Your Impact page ---------- */
+
+/* The "donut": a circle painted green up to --p % (conic-gradient), with a white hole in the middle */
+.tc-donut {
+  width: 96px; height: 96px; border-radius: 50%; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  background: conic-gradient(#30a46c calc(var(--p) * 1%), #e9ecef 0);
+}
+.tc-donut span {
+  width: 70px; height: 70px; border-radius: 50%; background: #fff;
+  display: flex; align-items: center; justify-content: center; font-weight: 700;
+}
+
+/* The tone bar: red (negative) -> grey (neutral) -> green (positive), with a round marker */
+.tc-meter-row { display: flex; align-items: center; gap: .5rem; }
+.tc-emoji { font-size: 1.15rem; line-height: 1; }
+.tc-meter {
+  position: relative; flex: 1; height: 10px; border-radius: 999px;
+  background: linear-gradient(90deg, #e5484d 0%, #c9ced6 50%, #30a46c 100%);
+}
+.tc-marker {
+  position: absolute; top: 50%;
+  width: 18px; height: 18px; margin-left: -9px; margin-top: -9px;
+  border-radius: 50%; background: #fff; border: 3px solid #343a40;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
+}
+
 /* "✓ Looks good!" in green */
 .tc-issues .tc-ok {
   color: #1e7e34;

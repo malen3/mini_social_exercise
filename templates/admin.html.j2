@@ -49,6 +49,7 @@
                         <th>Profile Bio</th>
                         <th>Created At</th>
                         <th>Risk Level</th>
+                        <th>Standing</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
@@ -70,6 +71,16 @@
                                 <span class="badge bg-secondary">NONE</span>
                             {% endif %}
                             <span class="ms-2">({{ user.risk_score }})</span>
+                        </td>
+                        <!-- Tone Coach (Design Claim 31): level emoji and active strikes, with a "Clear strikes" button -->
+                        <td class="text-nowrap">
+                            <span title="{{ user.standing.label }}">{{ user.standing.emoji }}</span>
+                            <span class="ms-1">{{ user.standing.strikes }}/3</span>
+                            {% if user.standing.strikes %}
+                            <form action="{{ url_for('admin_clear_strikes', user_id=user.id) }}" method="POST" class="d-inline ms-2">
+                                <button type="submit" class="btn btn-sm btn-outline-secondary">Clear strikes</button>
+                            </form>
+                            {% endif %}
                         </td>
                         <td>
                             <form action="{{ url_for('admin_delete_user', user_id=user.id) }}" method="POST" onsubmit="return confirm('WARNING: Deleting a user will also delete ALL their posts, comments, and reactions. This cannot be undone. Are you sure?');">

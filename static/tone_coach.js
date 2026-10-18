@@ -160,13 +160,52 @@ function openConfirm(form, textarea, result) {
   // "Post anyway": close the window and send the form as it is
   document.getElementById('tcPostAnyway').onclick = function () {
     modal.hide();
+    // Tell the server that the user saw the warning and posted anyway
+    form.querySelector('input[name="coach_action"]').value = 'override';
     // Send the form without asking again
     form.submit();
   };
 }
 
+// Cooldown countdown (Design Claim 31): while the user has to wait, the submit buttons are
+// disabled and show "⏳ Wait 09:41". This is only to make it clear: the server checks it again anyway.
+function startCooldownCountdown() {
+  // The seconds left come from base.html.j2 (<div id="tc-status" data-cooldown="...">)
+  var status = document.getElementById('tc-status');
+  var seconds = status ? parseInt(status.dataset.cooldown || '0', 10) : 0;
+  if (!(seconds > 0)) return;    // no cooldown: nothing to do
+
+  var endTime = Date.now() + seconds * 1000;
+  // Every submit button of the Tone Coach forms (class tc-submit)
+  var buttons = document.querySelectorAll('.tc-submit');
+  buttons.forEach(function (button) {
+    button.dataset.label = button.textContent;   // remember the normal text ("Post")
+    button.disabled = true;
+  });
+
+  // Every second: update the text, and when the time is over, enable the buttons again
+  function tick() {
+    var left = Math.max(0, Math.round((endTime - Date.now()) / 1000));
+    if (left === 0) {
+      buttons.forEach(function (button) {
+        button.disabled = false;
+        button.textContent = button.dataset.label;
+      });
+      clearInterval(interval);
+      return;
+    }
+    // mm:ss, for example 09:05 (padStart adds the 0 in front)
+    var mm = String(Math.floor(left / 60)).padStart(2, '0');
+    var ss = String(left % 60).padStart(2, '0');
+    buttons.forEach(function (button) { button.textContent = '⏳ Wait ' + mm + ':' + ss; });
+  }
+  var interval = setInterval(tick, 1000);
+  tick();
+}
+
 // Wait until the whole page is loaded, so the forms already exist
 document.addEventListener('DOMContentLoaded', function () {
+  startCooldownCountdown();
 
   // Find every form with the sticker data-tone-coach
   document.querySelectorAll('form[data-tone-coach]').forEach(function (form) {
@@ -176,6 +215,10 @@ document.addEventListener('DOMContentLoaded', function () {
     var panel = form.querySelector('.tc-panel');
     // The "alarm clock" of the waiter (see below)
     var timer = null;
+    // The hidden field coach_action: it tells the server what the user did with the Tone Coach
+    var action = form.querySelector('input[name="coach_action"]');
+    // Has the "Before you post…" window already been shown for this message? (at the start: no)
+    var warned = false;
 
     // ----- 1. While typing: the live panel -----
     // Every time the user types (or deletes) something in the text box...
@@ -207,10 +250,14 @@ document.addEventListener('DOMContentLoaded', function () {
       analyze(textarea.value).then(function (result) {
         // needs_warning = the text would be censored OR it sounds very negative (see analyze_text)
         if (result.needs_warning) {
-          // There are problems: open the "Before you post…" window
+          // There are problems: remember that the window was shown, and open it
+          warned = true;
           openConfirm(form, textarea, result);
         } else {
-          // No problems: send the form now (form.submit() sends it without asking again)
+          // No problems: if the window was shown before, the user fixed the message ("edited");
+          // if not, there were never problems ("clean")
+          action.value = warned ? 'edited' : 'clean';
+          // Send the form now (form.submit() sends it without asking again)
           form.submit();
         }
       }).catch(function () {

@@ -1,6 +1,7 @@
 {% extends "base.html.j2" %}
 {% block content %}
 {% from "macros/user_macros.html.j2" import user_display %}
+{% from "macros/tone_macros.html.j2" import suspended_card, restriction_notice %}
 
 <div class="align-center text-center">
   <img src="{{ url_for('static', filename='icon.png') }}" alt="Logo" style="height: 64px;" class="mb-4">
@@ -8,6 +9,12 @@
 
 {% if session.get('user_id') %}
 <div class="col-md-8 mx-auto mb-4">
+  {% if tone_status and tone_status.level == 'suspended' %}
+  <!-- Tone Coach (Design Claim 31): posting is suspended, so the form is replaced by a card -->
+  {{ suspended_card(tone_status) }}
+  {% else %}
+  <!-- Tone Coach (Design Claim 31): a small notice at "warning" and "cooldown" -->
+  {{ restriction_notice(tone_status) }}
   <div class="card shadow-sm">
     <div class="card-body">
       <h5 class="card-title">Create a new post</h5>
@@ -19,11 +26,15 @@
         </div>
         <!-- The empty box where the JavaScript draws the panel (hidden until the user writes something) -->
         <div class="tc-panel" hidden></div>
+        <!-- Hidden field: what the user did with the Tone Coach (clean / edited / override), changed by tone_coach.js -->
+        <input type="hidden" name="coach_action" value="clean">
 
-        <button type="submit" class="btn btn-primary float-end">Post</button>
+        <!-- tc-submit: during a cooldown, tone_coach.js shows a countdown on this button -->
+        <button type="submit" class="btn btn-primary float-end tc-submit">Post</button>
       </form>
     </div>
   </div>
+  {% endif %}
 </div>
 {% endif %}
 
@@ -192,6 +203,10 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body">
+          {% if tone_status and tone_status.level == 'suspended' %}
+          <!-- Tone Coach (Design Claim 31): commenting is suspended too -->
+          {{ suspended_card(tone_status) }}
+          {% else %}
           <!-- Tone Coach (Design Claim 20): data-tone-coach="compact" = the small live panel -->
           <form action="/posts/{{ entry.post.id }}/comment" method="POST" data-tone-coach="compact">
             <div class="mb-3">
@@ -200,8 +215,11 @@
             </div>
             <!-- The empty box where the JavaScript draws the panel (hidden until the user writes something) -->
             <div class="tc-panel tc-compact" hidden></div>
-            <button type="submit" class="btn btn-primary">Submit Comment</button>
+            <!-- Hidden field: what the user did with the Tone Coach (clean / edited / override), changed by tone_coach.js -->
+            <input type="hidden" name="coach_action" value="clean">
+            <button type="submit" class="btn btn-primary tc-submit">Submit Comment</button>
           </form>
+          {% endif %}
         </div>
       </div>
     </div>

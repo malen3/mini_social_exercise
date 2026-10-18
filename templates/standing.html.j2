@@ -1,0 +1,77 @@
+{% extends "base.html.j2" %}
+{% block content %}
+
+<!-- Tone Coach + Consequences: "My standing" (Design Claim 31: graduated sanctions) -->
+<div class="col-md-10 mx-auto pt-4">
+  <h2 class="text-center border-bottom pb-2 mb-4">Your standing</h2>
+
+  <!-- The 4 levels as a "ladder": the current one is big and highlighted, the others are faded -->
+  <div class="tc-ladder mb-4">
+    {% for lvl in levels %}
+      <div class="tc-step{% if lvl.level == standing.level %} tc-current{% endif %}">
+        <div class="tc-step-emoji">{{ lvl.emoji }}</div>
+        <div class="tc-step-name">{{ lvl.label }}</div>
+        <div class="tc-step-text">{{ lvl.meaning }}</div>
+      </div>
+      {% if not loop.last %}<div class="tc-step-arrow d-none d-md-block">&rarr;</div>{% endif %}
+    {% endfor %}
+  </div>
+
+  <!-- How many strikes, as a bar, and what happens next -->
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <div class="d-flex justify-content-between small text-muted mb-1">
+        <span>Strikes</span>
+        <span><strong>{{ standing.strikes }}</strong> / {{ max_strikes }}</span>
+      </div>
+      {% set strike_percent = [standing.strikes / max_strikes * 100, 100]|min %}
+      <div class="progress mb-3" style="height: 12px;">
+        <div class="progress-bar {% if standing.strikes >= max_strikes %}bg-danger{% elif standing.strikes == 2 %}bg-warning{% else %}bg-success{% endif %}"
+             style="width: {{ strike_percent }}%"></div>
+      </div>
+
+      {% if standing.suspended_until %}
+        <p class="mb-0">🔴 Posting is paused until <strong>{{ standing.suspended_until.strftime('%b %d, %Y %H:%M') }}</strong> (UTC).</p>
+      {% elif standing.cooldown_seconds > 0 %}
+        <p class="mb-0">🟠 You can post or comment again in <strong>{{ ((standing.cooldown_seconds + 59) // 60) }} minute(s)</strong>.</p>
+      {% elif standing.next_expiry %}
+        <p class="mb-0 text-muted">Your oldest strike expires on {{ standing.next_expiry.strftime('%b %d, %Y %H:%M') }} (UTC), and your standing will improve.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if strikes %}
+  <!-- The active strikes, as a timeline -->
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h5 class="card-title mb-3">Active strikes</h5>
+      <ul class="tc-timeline">
+        {% for strike in strikes %}
+          <li>
+            <div><strong>{{ strike.created_at.strftime('%b %d, %Y %H:%M') }}</strong> · {{ strike.content_type }}</div>
+            <div>{{ strike.reason }}</div>
+            <div class="tc-expires">expires in {{ strike.expires_in_days }} day{% if strike.expires_in_days != 1 %}s{% endif %}</div>
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+  {% else %}
+  <div class="card shadow-sm mb-4 text-center">
+    <div class="card-body">
+      <div class="display-6 mb-2">🎉</div>
+      <h5 class="card-title">All good!</h5>
+      <p class="mb-0">Thanks for keeping MiniSocial friendly.</p>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- A neutral explanation, without blaming (so the user can "save face" and come back) -->
+  <p class="text-muted">
+    A strike is given only when a post or a comment comes out censored by the rules.
+    Strikes expire after {{ expiry_days }} days, and your standing improves automatically.
+    <a href="{{ url_for('rules') }}">Read the community rules</a>.
+  </p>
+</div>
+
+{% endblock %}

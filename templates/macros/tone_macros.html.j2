@@ -1,0 +1,30 @@
+{# Tone Coach + Consequences (Assignment 2, Design Claim 31): reusable pieces for the post and comment forms #}
+
+{# Shown INSTEAD of the form when posting is suspended (3 or more active strikes) #}
+{% macro suspended_card(status) %}
+<div class="card tc-suspended shadow-sm">
+  <div class="card-body">
+    <h5 class="card-title mb-2">🔴 Posting is paused</h5>
+    <p class="mb-3">
+      Posting is paused until
+      <strong>{{ status.suspended_until.strftime('%b %d, %Y %H:%M') if status.suspended_until else 'your oldest strike expires' }}</strong> (UTC).
+    </p>
+    <a href="{{ url_for('standing_page') }}" class="btn btn-sm btn-light">Here's why &rarr;</a>
+  </div>
+</div>
+{% endmacro %}
+
+{# A small notice ABOVE the post form for the "warning" and "cooldown" levels #}
+{% macro restriction_notice(status) %}
+  {% if status and status.level == 'warning' %}
+    <div class="alert tc-notice tc-notice-warning py-2 small">
+      🟡 You have 1 active strike. Two more and you will be temporarily restricted.
+      <a href="{{ url_for('standing_page') }}">See your standing</a>
+    </div>
+  {% elif status and status.level == 'cooldown' %}
+    <div class="alert tc-notice tc-notice-cooldown py-2 small">
+      🟠 Cooldown: you can post or comment once every {{ status.cooldown_minutes }} minutes.
+      <a href="{{ url_for('standing_page') }}">See your standing</a>
+    </div>
+  {% endif %}
+{% endmacro %}

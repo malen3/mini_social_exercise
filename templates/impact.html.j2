@@ -97,6 +97,39 @@
   </div>
 
   {% endif %}
+
+  {% if tone and tone.messages %}
+  <!-- Tone Coach card (Assignment 2): data from tone_coach_log, all time -->
+  <div class="card shadow-sm mt-4 mb-4">
+    <div class="card-body">
+      <h5 class="card-title">🧭 Tone Coach</h5>
+      <div class="d-flex align-items-center gap-4 flex-wrap">
+        <!-- A "donut": the green part is the % of warnings that ended with an edited message -->
+        <div class="tc-donut" style="--p: {{ tone.rewrite_percent }};"><span>{{ tone.rewrite_percent }}%</span></div>
+        <div>
+          {% if tone.warned %}
+            <p class="mb-1"><strong>You rewrote {{ tone.edited }} of {{ tone.warned }} flagged messages{% if tone.edited %} 💪{% endif %}</strong></p>
+            <p class="small text-muted mb-0">
+              The Tone Coach warned you {{ tone.warned }} time{% if tone.warned != 1 %}s{% endif %}:
+              you edited {{ tone.edited }} and posted {{ tone.override }} anyway.
+            </p>
+          {% else %}
+            <p class="mb-1"><strong>The Tone Coach never had to warn you ✨</strong></p>
+            <p class="small text-muted mb-0">None of your messages needed a warning.</p>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Average tone of the last 20 messages, on a bar from 😡 to 😊 -->
+      <p class="small text-muted mt-4 mb-1">Average tone of your last {{ tone.messages }} message{% if tone.messages != 1 %}s{% endif %}: <strong>{{ tone.tone|capitalize }}</strong> ({{ tone.average }})</p>
+      <div class="tc-meter-row">
+        <span class="tc-emoji">😡</span>
+        <div class="tc-meter"><div class="tc-marker" style="left: {{ tone.marker_percent }}%;"></div></div>
+        <span class="tc-emoji">😊</span>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 </div>
 
 {% endblock %}
