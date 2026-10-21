@@ -1,0 +1,79 @@
+{% extends "base.html.j2" %}
+{% block content %}
+{% from "macros/welcome_macros.html.j2" import newcomer_badge with context %}
+{% from "macros/tone_macros.html.j2" import suspended_card %}
+
+<!-- Welcome Buddy: the buddy's page (Design Claim 20: welcomers; Design Claim 18: a friendly first reply) -->
+<div class="col-md-8 mx-auto pt-4">
+  <h2 class="text-center border-bottom pb-2 mb-2">Your newcomers 🌱</h2>
+  <p class="text-center text-muted mb-3">
+    Newcomers who get a friendly reply in their first days are much more likely to stay.
+  </p>
+  <p class="text-center mb-4">
+    <span class="wb-counter">You have welcomed {{ welcomed }} newcomer{% if welcomed != 1 %}s{% endif %} so far 💚</span>
+  </p>
+
+  {% for newcomer in newcomers %}
+  <div class="card wb-newcomer shadow-sm mb-4">
+    <div class="card-body">
+      <!-- Who the newcomer is -->
+      <div class="d-flex align-items-start gap-3 mb-3">
+        <a href="{{ url_for('user_profile', username=newcomer.username) }}" class="wb-avatar"
+           style="background: {{ loop_color(newcomer.username) }};">{{ newcomer.username[:1]|upper }}</a>
+        <div class="flex-grow-1">
+          <div class="fw-semibold">
+            <a href="{{ url_for('user_profile', username=newcomer.username) }}">@{{ newcomer.username }}</a>
+            {{ newcomer_badge(newcomer.id) }}
+          </div>
+          <div class="small text-muted">
+            New member for {{ newcomer.days_left }} more day{% if newcomer.days_left != 1 %}s{% endif %}
+          </div>
+          {% if newcomer.profile %}
+          <div class="wb-profile mt-1">“{{ newcomer.profile|truncate(140, True, '…') }}”</div>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Their posts -->
+      {% for post in newcomer.posts %}
+      <div class="wb-post {% if post.replies == 0 %}wb-waiting{% endif %}">
+        <a href="{{ url_for('post_detail', post_id=post.id) }}" class="text-decoration-none text-reset">
+          <p class="mb-1">{{ post.content }}</p>
+        </a>
+        {% if post.replies == 0 %}
+          <div class="wb-status wb-status-waiting">⏳ Waiting for a reply · posted {{ post.ago }}</div>
+          {% if tone_status and tone_status.level == 'suspended' %}
+            {{ suspended_card(tone_status) }}
+          {% else %}
+          <!-- Quick reply: the same comment form as everywhere, so it goes through moderate_content and the Tone Coach -->
+          <form action="/posts/{{ post.id }}/comment" method="POST" data-tone-coach="compact" data-newcomer-post="1" class="mt-2">
+            <textarea class="form-control form-control-sm" name="content" rows="2"
+                      placeholder="Say hi to @{{ newcomer.username }}…" required></textarea>
+            <div class="tc-panel tc-compact" hidden></div>
+            <input type="hidden" name="coach_action" value="clean">
+            <div class="text-end mt-2">
+              <button type="submit" class="btn btn-success btn-sm tc-submit">Reply</button>
+            </div>
+          </form>
+          {% endif %}
+        {% else %}
+          <div class="wb-status wb-status-done">✓ Welcomed</div>
+        {% endif %}
+      </div>
+      {% else %}
+      <p class="small text-muted mb-0">No posts yet. Maybe say hi on their profile? 👋</p>
+      {% endfor %}
+    </div>
+  </div>
+  {% else %}
+  <div class="card shadow-sm text-center">
+    <div class="card-body">
+      <div class="display-6 mb-2">🌿</div>
+      <h5 class="card-title">No newcomers right now</h5>
+      <p class="mb-0 text-muted">You'll be notified when someone new joins.</p>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+{% endblock %}

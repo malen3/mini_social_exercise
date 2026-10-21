@@ -15,6 +15,8 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='switch.css') }}">
   <!-- Tone Coach (Assignment 2): the colours of the live panel -->
   <link rel="stylesheet" href="{{ url_for('static', filename='tone_coach.css') }}">
+  <!-- Welcome Buddy (Assignment 3) -->
+  <link rel="stylesheet" href="{{ url_for('static', filename='welcome_buddy.css') }}">
 
 </head>
 <body class="bg-light">
@@ -48,6 +50,15 @@
         <li class="nav-item">
           <a class="nav-link" href="/privacy">Privacy</a>
         </li>
+
+        {% if welcome_nav %}
+        <!-- Welcome Buddy: only for buddies with newcomers; the badge = newcomer posts waiting for a reply -->
+        <li class="nav-item">
+          <a class="nav-link" href="{{ url_for('welcome_page') }}">🌱 Welcome
+            {% if welcome_nav.waiting %}<span class="badge rounded-pill bg-success wb-nav-count">{{ welcome_nav.waiting }}</span>{% endif %}
+          </a>
+        </li>
+        {% endif %}
 
         <!-- Check if user is logged in -->
         {% if session.get('user_id') %}

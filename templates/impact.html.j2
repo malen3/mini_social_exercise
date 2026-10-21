@@ -130,6 +130,25 @@
     </div>
   </div>
   {% endif %}
+
+  {% if buddy %}
+  <!-- Welcome Buddy card (Assignment 3): the newcomers this user received as a buddy -->
+  <div class="card wb-newcomer shadow-sm mt-4 mb-4">
+    <div class="card-body">
+      <h5 class="card-title">🌱 Welcome Buddy</h5>
+      <p class="mb-1">
+        <strong>You welcomed {{ buddy.welcomed }} of {{ buddy.assigned }} newcomer{% if buddy.assigned != 1 %}s{% endif %}{% if buddy.welcomed %} 💚{% endif %}</strong>
+      </p>
+      <p class="small text-muted mb-0">
+        {% if buddy.avg_text %}
+          On average, you said hi {{ buddy.avg_text }} after they joined.
+        {% else %}
+          You have not welcomed anyone yet. <a href="{{ url_for('welcome_page') }}">See your newcomers</a>.
+        {% endif %}
+      </p>
+    </div>
+  </div>
+  {% endif %}
 </div>
 
 {% endblock %}

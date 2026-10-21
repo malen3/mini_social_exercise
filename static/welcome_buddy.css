@@ -1,0 +1,75 @@
+/* Welcome Buddy (Coding Assignment #3, Chapter 5: Design Claims 18 and 20) */
+
+/* ---------- The welcome card on the feed (newcomers) ---------- */
+.wb-card {
+  position: relative;
+  border: none;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #eafaf1 0%, #f6fff9 60%, #ffffff 100%);
+  border-left: 6px solid #30a46c;
+}
+.wb-title { color: #1e6b45; font-weight: 700; }
+.wb-countdown { color: #4b7a62; font-size: .9rem; }
+.wb-close { position: absolute; top: .9rem; right: .9rem; }
+
+/* The buddy: a round avatar with the first letter, in the user's colour (loop_color) */
+.wb-buddy { background: #fff; border-radius: 14px; padding: .75rem .9rem; box-shadow: 0 1px 6px rgba(0, 0, 0, .05); }
+.wb-avatar {
+  flex: none; width: 48px; height: 48px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 700; font-size: 1.3rem; text-decoration: none;
+  box-shadow: 0 0 0 3px #fff, 0 0 0 5px #30a46c;
+}
+.wb-profile { font-size: .85rem; color: #6c757d; font-style: italic; }
+
+/* The first steps checklist */
+.wb-checklist { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: .5rem; }
+.wb-checklist li {
+  background: #fff; border: 1px solid #d7eee1; border-radius: 999px;
+  padding: .3rem .8rem; font-size: .875rem; color: #495057;
+}
+.wb-tick {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.1rem; height: 1.1rem; border-radius: 50%; margin-right: .25rem;
+  border: 2px solid #b6dcc6; font-size: .7rem; font-weight: 700; vertical-align: -2px;
+}
+.wb-checklist li.wb-done { background: #30a46c; border-color: #30a46c; color: #fff; }
+.wb-checklist li.wb-done .wb-tick { border-color: #fff; color: #fff; }
+
+/* ---------- The "🌱 New member" badge ---------- */
+.wb-badge {
+  display: inline-block; margin-left: .4rem; padding: .1em .55em;
+  border-radius: 999px; background: #e3f6ec; color: #1e7e4a;
+  font-size: .7rem; font-weight: 600; vertical-align: middle; white-space: nowrap;
+}
+
+/* ---------- The buddy's page /welcome ---------- */
+.wb-counter {
+  display: inline-block; padding: .35rem .9rem; border-radius: 999px;
+  background: #e3f6ec; color: #1e6b45; font-weight: 600;
+}
+.wb-newcomer { border: none; border-radius: 18px; border-left: 6px solid #30a46c; }
+.wb-post {
+  border-radius: 12px; padding: .7rem .9rem; margin-top: .6rem;
+  background: #f8f9fa; border: 1px solid #eef0f2;
+}
+.wb-post.wb-waiting { background: #fffaf0; border-color: #ffe2b5; }
+.wb-status { font-size: .8rem; font-weight: 600; }
+.wb-status-waiting { color: #a35c00; }
+.wb-status-done { color: #1e7e4a; }
+
+/* The "🌱 Welcome" link in the navigation bar, with the number of posts waiting for a reply */
+.wb-nav-count { font-size: .7rem; vertical-align: top; }
+
+/* The gentle reminder inside the Tone Coach panel when the post is from a newcomer */
+.wb-coach-note {
+  margin-bottom: .5rem; padding: .4rem .7rem; border-radius: 10px;
+  background: #e3f6ec; color: #1e6b45; font-size: .85rem;
+}
+
+/* ---------- The buddy's first comment on a newcomer's post ---------- */
+.wb-buddy-comment { border: 2px solid #30a46c !important; background: #f3fbf6; }
+.wb-buddy-label {
+  display: inline-block; margin-left: .4rem; padding: .1em .55em; border-radius: 999px;
+  background: #30a46c; color: #fff; font-size: .7rem; font-weight: 600; vertical-align: middle;
+}

@@ -2,10 +2,18 @@
 {% block content %}
 {% from "macros/user_macros.html.j2" import user_display %}
 {% from "macros/tone_macros.html.j2" import suspended_card, restriction_notice %}
+{% from "macros/welcome_macros.html.j2" import newcomer_badge, welcome_card_box with context %}
 
 <div class="align-center text-center">
   <img src="{{ url_for('static', filename='icon.png') }}" alt="Logo" style="height: 64px;" class="mb-4">
 </div>
+
+{% if welcome_card %}
+<!-- Welcome Buddy (Design Claims 18 and 20): the welcome card, only for newcomers -->
+<div class="col-md-8 mx-auto">
+  {{ welcome_card_box(welcome_card) }}
+</div>
+{% endif %}
 
 {% if session.get('user_id') %}
 <div class="col-md-8 mx-auto mb-4">
@@ -90,6 +98,7 @@
           {% else %}
           <a href="/u/{{ entry.post.user_id }}">{{ user_display(entry.post.username) }} </a>
           {% endif %}
+          {{ newcomer_badge(entry.post.user_id) }}
         </h3>
 
         
@@ -166,10 +175,13 @@
       {% endif %}
       <ul class="list-group list-group-flush shadow-none border-0">
         {% for comment in entry.comments[-2:] %}
-        <li class="card shadow-none p-2 mt-2">
+        <!-- Welcome Buddy: the buddy's first comment on the newcomer's post is highlighted -->
+        <li class="card shadow-none p-2 mt-2{% if comment.from_buddy %} wb-buddy-comment{% endif %}">
           <div class="d-flex justify-content-between">
             <div>
               <strong><a href="/u/{{ comment.username }}">{{ user_display(comment.username) }}</a></strong>
+              {{ newcomer_badge(comment.user_id) }}
+              {% if comment.from_buddy %}<span class="wb-buddy-label">👋 Your buddy</span>{% endif %}
               <p class="mb-0">{{ comment.content }}</p>
             </div>
             
@@ -208,7 +220,9 @@
           {{ suspended_card(tone_status) }}
           {% else %}
           <!-- Tone Coach (Design Claim 20): data-tone-coach="compact" = the small live panel -->
-          <form action="/posts/{{ entry.post.id }}/comment" method="POST" data-tone-coach="compact">
+          <!-- data-newcomer-post: the Tone Coach reminds you that this is a new member's post (Welcome Buddy) -->
+          <form action="/posts/{{ entry.post.id }}/comment" method="POST" data-tone-coach="compact"
+                {% if entry.post.user_id in newcomer_ids and entry.post.user_id != session.get('user_id') %}data-newcomer-post="1"{% endif %}>
             <div class="mb-3">
               <label for="comment-content-{{ entry.post.id }}" class="form-label">Your Comment</label>
               <textarea class="form-control" id="comment-content-{{ entry.post.id }}" name="content" rows="3" required></textarea>

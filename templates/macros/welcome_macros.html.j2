@@ -1,0 +1,56 @@
+{# Welcome Buddy (Coding Assignment #3, Chapter 5): reusable pieces.
+   Import them "with context", so they can see newcomer_ids (from the context processor). #}
+
+{# The "🌱 New member" badge next to a newcomer's name (Design Claim 18: old members can see who is new) #}
+{% macro newcomer_badge(user_id) %}
+  {% if newcomer_ids and user_id in newcomer_ids %}
+    <span class="wb-badge" title="Joined less than a week ago">🌱 New member</span>
+  {% endif %}
+{% endmacro %}
+
+{# The welcome card on top of the feed (only for newcomers) #}
+{% macro welcome_card_box(card) %}
+<div class="card wb-card shadow-sm mb-4">
+  <div class="card-body">
+    <!-- Close button: the card stays closed for this session -->
+    <form action="{{ url_for('dismiss_welcome_card') }}" method="POST" class="wb-close">
+      <button type="submit" class="btn-close" aria-label="Close" title="Hide this card"></button>
+    </form>
+
+    <h4 class="wb-title mb-1">🌱 Welcome to MiniSocial, {{ session.get('username') }}!</h4>
+    <p class="wb-countdown mb-3">
+      You are a new member for {{ card.days_left }} more day{% if card.days_left != 1 %}s{% endif %}.
+    </p>
+
+    {% if card.buddy %}
+    <!-- The buddy (Design Claim 20: a welcomer assigned to this newcomer) -->
+    <div class="wb-buddy d-flex align-items-start gap-3 mb-3">
+      <a href="{{ url_for('user_profile', username=card.buddy.username) }}" class="wb-avatar"
+         style="background: {{ loop_color(card.buddy.username) }};">{{ card.buddy.username[:1]|upper }}</a>
+      <div>
+        <div class="fw-semibold">
+          Your buddy is <a href="{{ url_for('user_profile', username=card.buddy.username) }}">@{{ card.buddy.username }}</a>
+        </div>
+        {% if card.buddy.profile %}
+        <div class="wb-profile">“{{ card.buddy.profile|truncate(110, True, '…') }}”</div>
+        {% endif %}
+        <div class="small mt-1">
+          @{{ card.buddy.username }} has been here for {{ card.buddy.time_here }} and will say hi to your first posts.
+          Don't be shy!
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- First steps, ticked automatically from the database -->
+    <div class="small text-muted mb-1">First steps · {{ card.steps_done }} / {{ card.checklist|length }}</div>
+    <ul class="wb-checklist">
+      {% for step in card.checklist %}
+        <li class="{% if step.done %}wb-done{% endif %}">
+          <span class="wb-tick">{% if step.done %}✓{% endif %}</span> {{ step.label }}
+        </li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+{% endmacro %}

@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash, g, jsonify
+from flask import Flask, render_template, request, redirect, url_for, session, flash, g, jsonify, abort
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
@@ -7,6 +7,7 @@ import json
 import sqlite3
 import hashlib
 import re
+import random
 from datetime import datetime, timedelta, timezone
 
 app = Flask(__name__)
@@ -14,6 +15,13 @@ app.secret_key = '123456789'
 DATABASE = 'database.sqlite'
 # Escape user text in every template (the templates end in .html.j2, so Flask does not do it by itself)
 app.jinja_env.autoescape = True
+
+# Welcome Buddy (Coding Assignment #3, Chapter 5: Design Claims 18 and 20)
+NEWCOMER_DAYS = 7              # a user is a newcomer during their first 7 days (the same as the risk rule of Coding #2)
+BUDDY_MIN_ACCOUNT_DAYS = 30    # a buddy has been a member for at least 30 days
+BUDDY_MIN_POSTS = 5            # ... and has written at least 5 posts
+BUDDY_RECENT_DAYS = 30         # "recently active" = posts or comments in the last 30 days
+BUDDY_POOL_SIZE = 10           # the buddy is chosen among the 10 most active candidates
 
 # Load censorship data
 # WARNING! The censorship.dat file contains disturbing language when decrypted. 
@@ -153,6 +161,10 @@ def feed():
         final_params = params + list(pagination_params)
         posts = query_db(query, final_params)
 
+    # Welcome Buddy: the newcomer's buddy (to highlight their first comment on the newcomer's posts)
+    my_buddy = get_my_buddy(current_user_id) if current_user_id and is_newcomer(current_user_id) else None
+    my_buddy_id = my_buddy['id'] if my_buddy else None
+
     posts_data = []
     for post in posts:
         # Determine if the current user follows the poster
@@ -186,6 +198,8 @@ def feed():
             comment_dict = dict(comment)
             comment_dict['content'], _ = moderate_content(comment_dict['content'])
             comments_moderated.append(comment_dict)
+        # Welcome Buddy: highlight the buddy's first comment on the newcomer's own post
+        mark_buddy_comments(comments_moderated, post_dict['user_id'], current_user_id, my_buddy_id)
         posts_data.append({
             'post': post_dict,
             'reactions': reactions,
@@ -206,8 +220,14 @@ def feed():
         weekly_percent = min(100, int(weekly_progress / weekly_challenge['target'] * 100))
         weekly_label = CHALLENGE_TYPES[weekly_challenge['challenge_type']]
 
+    # Welcome Buddy: the welcome card on top of the feed (only for newcomers, until they close it)
+    welcome_card = None
+    if current_user_id and not session.get('welcome_card_closed'):
+        welcome_card = welcome_card_data(current_user_id)
+
     #  4. Render Template with Pagination Info
     return render_template('feed.html.j2',
+                           welcome_card=welcome_card,
                            posts=posts_data,
                            current_sort=sort,
                            current_show=show,
@@ -419,6 +439,12 @@ def post_detail(post_id):
         comment['content'] = moderated_comment_content
         comments.append(comment)
 
+    # Welcome Buddy: highlight the buddy's first comment if the viewer is the newcomer who wrote the post
+    viewer_id = session.get('user_id')
+    if viewer_id == post['user_id'] and is_newcomer(viewer_id):
+        my_buddy = get_my_buddy(viewer_id)
+        mark_buddy_comments(comments, post['user_id'], viewer_id, my_buddy['id'] if my_buddy else None)
+
     # Ask an Expert: help requests for this post (shown to the author)
     help_requests = query_db('''
         SELECT h.status, u.username
@@ -473,6 +499,13 @@ def signup():
 
             # 1. Get the ID of the user we just created.
             new_user_id = cur.lastrowid
+
+            # Welcome Buddy (Design Claim 20): give the newcomer a buddy right away
+            # (before db.close() below; if anything fails, the signup still works)
+            try:
+                assign_buddy(new_user_id)
+            except Exception as e:
+                print(f'Welcome Buddy: could not assign a buddy: {e}')
 
             # 2. Add user info to the session cookie.
             session.clear() # Clear any old session data
@@ -554,6 +587,8 @@ def add_comment(post_id):
         db.commit()
         # Tone Coach: write it in the diary and, if it comes out censored, give a strike (Design Claim 31)
         tone_after_posting(user_id, 'comment', cur.lastrowid, content, request.form.get('coach_action'))
+        # Welcome Buddy: if this is the buddy's first comment on their newcomer's post, remember when
+        mark_buddy_welcome(user_id, post_id)
         flash('Your comment was added.', 'success')
         # Ask an Expert: if this user had a pending help request for this post, mark it as accepted
         cur = query_db("UPDATE help_requests SET status = 'accepted' WHERE post_id = ? AND helper_id = ? AND status = 'pending'", (post_id, user_id), commit=True)
@@ -1085,6 +1120,38 @@ def moderate_content(content):
 
 # Coding Assignment #3
 # Assignment 3.1
+
+# ----- Settings of the recommendation algorithm -----
+
+# Reactions that mean "I like this" ('angry' and 'sad' do not count).
+# The old data in the database uses 'haha', but new reactions from the buttons
+# are saved as 'laugh' (see REACTION_EMOJIS), so both are here.
+POSITIVE_REACTIONS = ('like', 'love', 'haha', 'laugh', 'wow')
+
+# Very common English words that say nothing about the topic of a post
+STOPWORDS = {
+    'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'any', 'can', 'had', 'her', 'was',
+    'one', 'our', 'out', 'has', 'his', 'how', 'its', 'let', 'who', 'did', 'yes', 'get', 'got',
+    'him', 'she', 'too', 'use', 'way', 'this', 'that', 'with', 'have', 'from', 'they', 'will',
+    'your', 'what', 'when', 'just', 'like', 'some', 'them', 'than', 'then', 'there', 'their',
+    'about', 'would', 'could', 'should', 'which', 'these', 'those', 'been', 'were', 'into',
+    'more', 'most', 'much', 'very', 'also', 'only', 'over', 'such', 'here', 'where', 'while',
+    'after', 'before', 'again', 'because', 'being', 'does', 'doing', 'each', 'other', 'really',
+    'today', 'know', 'think', 'make', 'made', 'going', 'want', 'need', 'still', 'even', 'every',
+}
+
+# The numbers of the algorithm
+RECOMMEND_COUNT = 5             # how many posts to recommend
+TOPIC_COUNT = 20                # how many of the user's most frequent words are their "topics"
+MIN_WORD_LENGTH = 3             # shorter words are ignored
+WEIGHT_TOPIC = 1.0              # points for each topic word in a post (x how important the topic is)
+WEIGHT_FOLLOWED_AUTHOR = 2.0    # extra points if the user follows the author
+WEIGHT_LIKED_AUTHOR = 0.5       # extra points if the user liked posts of this author before
+                                # (less than one topic word, so the topic decides more than the author)
+WEIGHT_POPULARITY = 0.5         # at most 0.5 points for the most popular post (only to break ties)
+COLD_START_DAYS = 7             # cold start: the most popular posts of the last 7 days
+
+
 def recommend(user_id, filter_following):
     """
     Args:
@@ -1104,10 +1171,147 @@ def recommend(user_id, filter_following):
     - http://www.configworks.com/mz/handout_recsys_sac2010.pdf
     - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
     """
+    scored = score_candidates(user_id, filter_following)
 
-    recommended_posts = {} 
+    # None = cold start (not logged in, or no positive reactions and no follows yet)
+    if scored is None:
+        if filter_following:
+            # Only posts of followed users were asked, and the user follows nobody
+            return []
+        return cold_start_posts()
 
-    return recommended_posts;
+    # The best RECOMMEND_COUNT posts (already sorted best first) ...
+    best = [post for score, post in scored[:RECOMMEND_COUNT]]
+    # ... shown newest first, like the rest of the feed
+    best.sort(key=lambda post: post['created_at'], reverse=True)
+    return best
+
+
+def extract_words(text):
+    '''The "topic words" of a text: lowercase, only letters, without stopwords and short words.
+    Example: "Fixed the leaky sink! #DIYLife" -> ['fixed', 'leaky', 'sink', 'diylife']'''
+    words = re.findall(r'[a-z]+', (text or '').lower())
+    return [word for word in words if len(word) >= MIN_WORD_LENGTH and word not in STOPWORDS]
+
+
+def matching_topic(word, topics):
+    '''The topic this word belongs to, or None. A word matches a topic if it is the same word
+    or if it STARTS with it, a very simple kind of stemming:
+    "diydecor" (from #DIYDecor) -> "diy", "fixed" -> "fix", "projects" -> "project".'''
+    if word in topics:
+        return word
+    for topic in topics:
+        if word.startswith(topic):
+            return topic
+    return None
+
+
+def score_candidates(user_id, filter_following):
+    '''The core of recommend(): gives a score to every candidate post.
+    Returns a list of (score, post) pairs, best first, or None for a cold start.
+    (A separate function so the test script can show the scores.)'''
+    # No user (not logged in): nothing is known about them -> cold start
+    if not user_id:
+        return None
+
+    # "?, ?, ?, ?, ?": one ? per positive reaction, for the IN (...) of the queries
+    marks = ', '.join('?' * len(POSITIVE_REACTIONS))
+
+    # 1. The posts the user reacted to positively (one query)
+    liked_posts = query_db(f'''SELECT p.user_id, p.content FROM reactions r JOIN posts p ON p.id = r.post_id
+                               WHERE r.user_id = ? AND r.reaction_type IN ({marks})''',
+                           (user_id, *POSITIVE_REACTIONS)) or []
+
+    # 2. Interest profile: count the words of those posts; the most frequent ones are the "topics"
+    word_counts = collections.Counter()
+    for post in liked_posts:
+        word_counts.update(extract_words(post['content']))
+    topics = dict(word_counts.most_common(TOPIC_COUNT))   # {'diy': 4, 'project': 2, ...}
+    top_count = max(topics.values()) if topics else 1     # the count of the most important topic
+
+    # 3. Trusted authors: the users they follow + the authors of the posts they liked
+    followed = {row['followed_id'] for row in
+                (query_db('SELECT followed_id FROM follows WHERE follower_id = ?', (user_id,)) or [])}
+    liked_authors = {post['user_id'] for post in liked_posts}
+
+    # Nothing known yet (no likes, no follows) -> cold start
+    if not liked_posts and not followed:
+        return None
+
+    # 4. Candidates: posts that are not theirs and that they have not reacted to yet,
+    #    with their number of positive reactions (all in one query)
+    candidates = query_db(f'''
+        SELECT p.id, p.content, p.created_at, u.username, u.id AS user_id,
+               IFNULL(pr.positive, 0) AS positive
+        FROM posts p
+        JOIN users u ON u.id = p.user_id
+        LEFT JOIN (SELECT post_id, COUNT(*) AS positive FROM reactions
+                   WHERE reaction_type IN ({marks}) GROUP BY post_id) pr ON pr.post_id = p.id
+        WHERE p.user_id != ?
+          AND p.id NOT IN (SELECT post_id FROM reactions WHERE user_id = ?)''',
+        (*POSITIVE_REACTIONS, user_id, user_id)) or []
+
+    # The most positive reactions of any candidate, to turn popularity into a number from 0 to 1
+    # (some posts have ~100 reactions: without this, popularity would decide everything)
+    max_positive = max([row['positive'] for row in candidates] + [1])
+
+    # 5. The score of every candidate (in Python, no more queries)
+    scored = []
+    for row in candidates:
+        post = dict(row)
+        # "Following" filter: only posts of followed users
+        if filter_following and post['user_id'] not in followed:
+            continue
+        score = 0.0
+        # +1 for every topic word in the post, weighted by how important that topic is for the user
+        # (set: a word repeated 5 times in the same post only counts once)
+        for word in set(extract_words(post['content'])):
+            topic = matching_topic(word, topics)
+            if topic:
+                score += WEIGHT_TOPIC * topics[topic] / top_count
+        # Known authors
+        if post['user_id'] in followed:
+            score += WEIGHT_FOLLOWED_AUTHOR
+        if post['user_id'] in liked_authors:
+            score += WEIGHT_LIKED_AUTHOR
+        # A small extra for popular posts, only to break ties (0 to WEIGHT_POPULARITY points)
+        score += WEIGHT_POPULARITY * post.pop('positive') / max_positive
+        scored.append((round(score, 2), post))
+
+    # Best first; with the same score, the newest first
+    scored.sort(key=lambda pair: (pair[0], pair[1]['created_at']), reverse=True)
+    return scored
+
+
+def cold_start_posts():
+    '''Cold start (new user or not logged in): the most popular posts of the last COLD_START_DAYS days.
+    If there are not enough recent ones, the list is completed with the most popular posts of all time.'''
+    marks = ', '.join('?' * len(POSITIVE_REACTIONS))
+    since = (datetime.now(timezone.utc) - timedelta(days=COLD_START_DAYS)).strftime('%Y-%m-%d %H:%M:%S')
+    query = f'''
+        SELECT p.id, p.content, p.created_at, u.username, u.id AS user_id, COUNT(r.id) AS positive
+        FROM posts p
+        JOIN users u ON u.id = p.user_id
+        JOIN reactions r ON r.post_id = p.id AND r.reaction_type IN ({marks})
+        WHERE p.created_at >= ?
+        GROUP BY p.id
+        ORDER BY positive DESC, p.created_at DESC
+        LIMIT ?'''
+    recent = query_db(query, (*POSITIVE_REACTIONS, since, RECOMMEND_COUNT)) or []
+    # All time ("since" = the beginning of time)
+    all_time = query_db(query, (*POSITIVE_REACTIONS, '0000-01-01', RECOMMEND_COUNT * 2)) or []
+
+    posts = []
+    seen = set()
+    for row in list(recent) + list(all_time):
+        if row['id'] not in seen and len(posts) < RECOMMEND_COUNT:
+            seen.add(row['id'])
+            post = dict(row)
+            post.pop('positive')
+            posts.append(post)
+    # Newest first, like the rest of the feed
+    posts.sort(key=lambda post: post['created_at'], reverse=True)
+    return posts
 
 
 
@@ -1878,7 +2082,9 @@ def impact_page():
                            has_impact=has_impact,
                            min_length=IMPACT_MIN_COMMENT_LENGTH,
                            # Tone Coach card (Assignment 2): what the user did with the warnings
-                           tone=tone_coach_summary(user_id))
+                           tone=tone_coach_summary(user_id),
+                           # Welcome Buddy card (Assignment 3): the newcomers this user welcomed
+                           buddy=welcome_buddy_summary(user_id))
 
 
 # ----- Feature: Tone Coach + Consequences (Assignment 2, Chapter 4) -----
@@ -2250,8 +2456,324 @@ def inject_tone_status():
     return {'tone_status': get_posting_status(user_id)}
 
 
+# ----- Feature: Welcome Buddy (Coding Assignment #3, Chapter 5: Dealing with Newcomers) -----
+# Design Claim 18: newcomers who have friendly interactions with old members soon after joining
+#                  stay longer and contribute more.
+# Design Claim 20: assigning "welcomers" (old members in charge of receiving new ones) helps.
+# Every new user automatically gets a trusted, active "buddy" who welcomes them and replies to their first posts.
+# (The settings NEWCOMER_DAYS, BUDDY_MIN_ACCOUNT_DAYS... are at the top of app.py.)
+
+def init_welcome_buddy_tables():
+    '''Create the table of the Welcome Buddy feature if it does not exist yet.'''
+    db = get_db()
+    # One row per newcomer: who their buddy is, and when the buddy first interacted with them
+    db.execute('''CREATE TABLE IF NOT EXISTS buddies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    newcomer_id INTEGER NOT NULL,
+    buddy_id INTEGER NOT NULL,
+    assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    welcomed_at TIMESTAMP NULL)
+    ''')
+    db.commit()
+
+with app.app_context():
+    init_welcome_buddy_tables()
 
 
+def days_ago_text(days):
+    '''The moment "now minus X days", as UTC text in the same format as CURRENT_TIMESTAMP (to compare in SQL).'''
+    moment = datetime.now(timezone.utc) - timedelta(days=days)
+    return moment.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def is_newcomer(user_id):
+    '''True if the account is less than NEWCOMER_DAYS days old.'''
+    if not user_id:
+        return False
+    row = query_db('SELECT 1 FROM users WHERE id = ? AND created_at >= ?',
+                   (user_id, days_ago_text(NEWCOMER_DAYS)), one=True)
+    return row is not None
+
+
+def choose_buddy(newcomer_id):
+    '''Choose a buddy for a newcomer (Design Claim 20). Returns the buddy's id, or None.
+
+    1. SQL filter: account of BUDDY_MIN_ACCOUNT_DAYS+ days, BUDDY_MIN_POSTS+ posts, not the admin,
+       not the newcomer, and no active strikes (Coding #2). The same query counts each candidate's
+       recent activity, total activity and how many newcomers they have now.
+    2. Most active first: recent activity (last BUDDY_RECENT_DAYS days), then total activity
+       (so if nobody has been active recently, the total activity decides).
+    3. Walking down that list, only users with risk NONE (user_risk_analysis < 1.0) enter the pool,
+       until it has BUDDY_POOL_SIZE people (the risk is slow, so it is not computed for everybody).
+    4. In the pool, the one with the fewest newcomers right now (to share the work); ties at random.'''
+    candidates = query_db('''
+        SELECT u.id,
+               (SELECT COUNT(*) FROM posts WHERE user_id = u.id AND created_at >= ?)
+             + (SELECT COUNT(*) FROM comments WHERE user_id = u.id AND created_at >= ?) AS recent,
+               (SELECT COUNT(*) FROM posts WHERE user_id = u.id)
+             + (SELECT COUNT(*) FROM comments WHERE user_id = u.id) AS total,
+               (SELECT COUNT(*) FROM buddies b JOIN users n ON n.id = b.newcomer_id
+                 WHERE b.buddy_id = u.id AND n.created_at >= ?) AS load
+        FROM users u
+        WHERE u.id != ?
+          AND u.username != 'admin'
+          AND u.created_at <= ?
+          AND (SELECT COUNT(*) FROM posts WHERE user_id = u.id) >= ?
+          AND u.id NOT IN (SELECT user_id FROM strikes WHERE created_at >= ?)''',
+        (days_ago_text(BUDDY_RECENT_DAYS), days_ago_text(BUDDY_RECENT_DAYS), days_ago_text(NEWCOMER_DAYS),
+         newcomer_id, days_ago_text(BUDDY_MIN_ACCOUNT_DAYS), BUDDY_MIN_POSTS, strikes_window_start())) or []
+
+    # Most active first
+    candidates = sorted(candidates, key=lambda row: (row['recent'], row['total']), reverse=True)
+
+    # Only trusted people (risk NONE), until the pool is full
+    pool = []
+    for row in candidates:
+        if user_risk_analysis(row['id']) < 1.0:
+            pool.append(row)
+            if len(pool) == BUDDY_POOL_SIZE:
+                break
+    if not pool:
+        return None
+
+    # The fewest newcomers right now; if several have the same number, one of them at random
+    fewest = min(row['load'] for row in pool)
+    return random.choice([row['id'] for row in pool if row['load'] == fewest])
+
+
+def assign_buddy(newcomer_id):
+    '''Choose a buddy, save it in the table buddies, and make the buddy follow the newcomer
+    (so the newcomer's posts appear in the buddy's "Following" feed). Returns the buddy's id or None.'''
+    # A newcomer only gets one buddy
+    existing = query_db('SELECT buddy_id FROM buddies WHERE newcomer_id = ?', (newcomer_id,), one=True)
+    if existing:
+        return existing['buddy_id']
+
+    buddy_id = choose_buddy(newcomer_id)
+    if buddy_id is None:
+        return None
+    query_db('INSERT INTO buddies (newcomer_id, buddy_id) VALUES (?, ?)', (newcomer_id, buddy_id), commit=True)
+    # The buddy follows the newcomer (only if they do not follow them already: follows has no unique rule)
+    if not query_db('SELECT 1 FROM follows WHERE follower_id = ? AND followed_id = ?', (buddy_id, newcomer_id), one=True):
+        query_db('INSERT INTO follows (follower_id, followed_id) VALUES (?, ?)', (buddy_id, newcomer_id), commit=True)
+    return buddy_id
+
+
+def get_my_buddy(user_id):
+    '''The buddy of this user (a dict with id, username, profile, created_at, days_here, assigned_at, welcomed_at),
+    or None if they have no buddy.'''
+    row = query_db('''SELECT u.id, u.username, u.profile, u.created_at, b.assigned_at, b.welcomed_at
+                      FROM buddies b JOIN users u ON u.id = b.buddy_id
+                      WHERE b.newcomer_id = ?''', (user_id,), one=True)
+    if not row:
+        return None
+    buddy = dict(row)
+    created = to_datetime(buddy['created_at'])
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    buddy['days_here'] = (now - created).days if created else 0
+    return buddy
+
+
+def get_my_newcomers(user_id):
+    '''The newcomers assigned to this buddy who are STILL newcomers, newest first
+    (a list of dicts with id, username, profile, created_at, assigned_at, welcomed_at).'''
+    rows = query_db('''SELECT n.id, n.username, n.profile, n.created_at, b.assigned_at, b.welcomed_at
+                       FROM buddies b JOIN users n ON n.id = b.newcomer_id
+                       WHERE b.buddy_id = ? AND n.created_at >= ?
+                       ORDER BY n.created_at DESC''', (user_id, days_ago_text(NEWCOMER_DAYS))) or []
+    return [dict(row) for row in rows]
+
+
+def mark_buddy_welcome(buddy_id, post_id):
+    '''Called by add_comment: if this comment is the buddy's FIRST interaction with their newcomer
+    (a comment on one of the newcomer's posts), remember when it happened (welcomed_at).'''
+    query_db('''UPDATE buddies SET welcomed_at = CURRENT_TIMESTAMP
+                WHERE buddy_id = ? AND welcomed_at IS NULL
+                  AND newcomer_id = (SELECT user_id FROM posts WHERE id = ?)''',
+             (buddy_id, post_id), commit=True)
+
+
+# --- What the NEWCOMER sees (subtask 4) ---
+
+def time_here_text(days):
+    '''How long someone has been a member, in friendly words: "12 days", "5 months", "3 years".'''
+    if days < 60:
+        return f'{days} day' + ('' if days == 1 else 's')
+    if days < 730:
+        return f'{days // 30} months'
+    return f'{days // 365} years'
+
+
+def newcomer_days_left(user_id, created_at=None):
+    '''How many days this user is still a newcomer (0 if they are not one any more).
+    If the account date (created_at) is already known, it is passed in and no query is needed.'''
+    if created_at is None:
+        row = query_db('SELECT created_at FROM users WHERE id = ?', (user_id,), one=True)
+        created_at = row['created_at'] if row else None
+    created = to_datetime(created_at)
+    if not created:
+        return 0
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    seconds_left = (created + timedelta(days=NEWCOMER_DAYS) - now).total_seconds()
+    # Round up: 4.2 days left -> "5 more days"
+    return max(0, int(-(-seconds_left // 86400)))
+
+
+def welcome_card_data(user_id):
+    '''Everything the welcome card on the feed needs (only for newcomers), or None.
+    Design Claim 18: the newcomer knows from the first minute that a friendly old member is there for them.'''
+    if not is_newcomer(user_id):
+        return None
+
+    # The first steps checklist, with an automatic tick (counted from the database in one query)
+    counts = query_db('''SELECT (SELECT COUNT(*) FROM posts WHERE user_id = ?) AS posts,
+                                (SELECT COUNT(*) FROM follows WHERE follower_id = ?) AS follows,
+                                (SELECT COUNT(*) FROM reactions WHERE user_id = ?) AS reactions''',
+                      (user_id, user_id, user_id), one=True)
+    checklist = [
+        {'label': 'Write your first post', 'done': counts['posts'] >= 1},
+        {'label': 'Follow 3 people', 'done': counts['follows'] >= 3},
+        {'label': 'React to a post', 'done': counts['reactions'] >= 1},
+    ]
+
+    buddy = get_my_buddy(user_id)
+    if buddy:
+        # The buddy's profile, moderated like everywhere else (the template escapes it too)
+        buddy['profile'], _ = moderate_content(buddy['profile'] or '')
+        buddy['time_here'] = time_here_text(buddy['days_here'])
+
+    return {'days_left': newcomer_days_left(user_id), 'buddy': buddy, 'checklist': checklist,
+            'steps_done': sum(1 for step in checklist if step['done'])}
+
+
+def mark_buddy_comments(comments, post_author_id, viewer_id, buddy_id):
+    '''If the viewer is the newcomer who wrote the post, mark the FIRST comment of their buddy
+    (comment['from_buddy'] = True), so the template can highlight it. No database queries.'''
+    if not buddy_id or viewer_id != post_author_id:
+        return
+    for comment in comments:
+        if comment['user_id'] == buddy_id:
+            comment['from_buddy'] = True
+            return
+
+
+@app.route('/welcome/dismiss', methods=['POST'])
+def dismiss_welcome_card():
+    '''Close the welcome card for the rest of this session.'''
+    session['welcome_card_closed'] = True
+    return redirect(request.referrer or url_for('feed'))
+
+
+# --- What the BUDDY sees (subtask 5, Design Claim 20: the welcomer) ---
+
+def time_ago_text(moment):
+    '''How long ago something happened, in short words: "5 min ago", "3h ago", "2 days ago".'''
+    moment = to_datetime(moment)
+    if not moment:
+        return ''
+    seconds = (datetime.now(timezone.utc).replace(tzinfo=None) - moment).total_seconds()
+    if seconds < 3600:
+        return f'{max(1, int(seconds // 60))} min ago'
+    if seconds < 86400:
+        return f'{int(seconds // 3600)}h ago'
+    days = int(seconds // 86400)
+    return f'{days} day' + ('' if days == 1 else 's') + ' ago'
+
+
+@app.route('/welcome')
+def welcome_page():
+    '''"Your newcomers 🌱": the buddy's page. For each newcomer: their profile, how many days they are
+    still new, and their posts; the posts that nobody has answered yet have a quick comment form.'''
+    user_id = session.get('user_id')
+    if not user_id:
+        flash('You must be logged in to see your newcomers.', 'danger')
+        return redirect(url_for('login'))
+
+    newcomers = get_my_newcomers(user_id)
+    ids = [newcomer['id'] for newcomer in newcomers]
+
+    # All the posts of all my newcomers in ONE query, with the number of comments from OTHER users
+    posts_by_user = {newcomer_id: [] for newcomer_id in ids}
+    if ids:
+        marks = ', '.join('?' * len(ids))
+        rows = query_db(f'''SELECT p.id, p.user_id, p.content, p.created_at,
+                                   (SELECT COUNT(*) FROM comments c
+                                     WHERE c.post_id = p.id AND c.user_id != p.user_id) AS replies
+                            FROM posts p WHERE p.user_id IN ({marks})
+                            ORDER BY p.created_at DESC''', ids) or []
+        for row in rows:
+            post = dict(row)
+            post['content'], _ = moderate_content(post['content'])
+            post['ago'] = time_ago_text(post['created_at'])
+            posts_by_user[post['user_id']].append(post)
+
+    for newcomer in newcomers:
+        newcomer['profile'], _ = moderate_content(newcomer['profile'] or '')
+        newcomer['days_left'] = newcomer_days_left(newcomer['id'], newcomer['created_at'])
+        newcomer['posts'] = posts_by_user[newcomer['id']]
+
+    # How many newcomers I have welcomed so far (all time)
+    welcomed = query_db('SELECT COUNT(*) AS n FROM buddies WHERE buddy_id = ? AND welcomed_at IS NOT NULL',
+                        (user_id,), one=True)['n']
+
+    return render_template('welcome.html.j2', newcomers=newcomers, welcomed=welcomed)
+
+
+def welcome_buddy_summary(user_id):
+    '''Data for the "Welcome Buddy" card on the Your Impact page: how many newcomers were given to this
+    user, how many they welcomed, and how long they took on average to welcome them (in hours).'''
+    row = query_db('''SELECT COUNT(*) AS assigned,
+                             COUNT(welcomed_at) AS welcomed,
+                             AVG((julianday(welcomed_at) - julianday(assigned_at)) * 24) AS avg_hours
+                      FROM buddies WHERE buddy_id = ?''', (user_id,), one=True)
+    if not row or not row['assigned']:
+        return None
+    avg_hours = row['avg_hours']
+    if avg_hours is None:
+        avg_text = None
+    elif avg_hours < 1:
+        minutes = max(1, round(avg_hours * 60))
+        avg_text = f'{minutes} minute' + ('' if minutes == 1 else 's')
+    elif avg_hours < 48:
+        avg_text = f'{round(avg_hours, 1)} hours'
+    else:
+        avg_text = f'{round(avg_hours / 24, 1)} days'
+    return {'assigned': row['assigned'], 'welcomed': row['welcomed'], 'avg_text': avg_text}
+
+
+@app.context_processor
+def inject_welcome_nav():
+    '''For the "🌱 Welcome" link in the navigation bar (only for buddies with newcomers):
+    how many active newcomers I have and how many of their posts are waiting for a reply. ONE query.'''
+    user_id = session.get('user_id')
+    if not user_id:
+        return {'welcome_nav': None}
+    try:
+        row = query_db('''
+            SELECT COUNT(DISTINCT n.id) AS newcomers,
+                   (SELECT COUNT(*) FROM posts p
+                     WHERE p.user_id IN (SELECT b2.newcomer_id FROM buddies b2 JOIN users n2 ON n2.id = b2.newcomer_id
+                                          WHERE b2.buddy_id = ? AND n2.created_at >= ?)
+                       AND NOT EXISTS (SELECT 1 FROM comments c WHERE c.post_id = p.id AND c.user_id != p.user_id)) AS waiting
+            FROM buddies b JOIN users n ON n.id = b.newcomer_id
+            WHERE b.buddy_id = ? AND n.created_at >= ?''',
+            (user_id, days_ago_text(NEWCOMER_DAYS), user_id, days_ago_text(NEWCOMER_DAYS)), one=True)
+    except Exception:
+        row = None
+    if not row or not row['newcomers']:
+        return {'welcome_nav': None}
+    return {'welcome_nav': {'newcomers': row['newcomers'], 'waiting': row['waiting']}}
+
+
+@app.context_processor
+def inject_newcomer_ids():
+    '''newcomer_ids: the ids of ALL newcomers, in every template, with ONE query per page.
+    The templates use it for the "🌱 New member" badge without one query per post.'''
+    try:
+        rows = query_db('SELECT id FROM users WHERE created_at >= ?', (days_ago_text(NEWCOMER_DAYS),)) or []
+    except Exception:
+        rows = []
+    return {'newcomer_ids': {row['id'] for row in rows}}
 
 
 if __name__ == '__main__':

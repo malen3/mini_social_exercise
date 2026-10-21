@@ -52,11 +52,20 @@ function fillIssues(list, result) {
 }
 
 // Draw the answer of analyze_text() inside the panel (the empty box of the form)
-function showResult(panel, result) {
+// newcomerPost: true if the comment is for a new member's post (Welcome Buddy, Assignment 3)
+function showResult(panel, result, newcomerPost) {
   // Empty the box (remove the previous answer)
   panel.replaceChildren();
   // Show the box (it starts hidden)
   panel.hidden = false;
+
+  // Welcome Buddy: a gentle reminder on top when replying to a newcomer (do not be hostile with new members)
+  if (newcomerPost) {
+    var note = document.createElement('div');
+    note.className = 'wb-coach-note';
+    note.textContent = "🌱 This is a new member's post — a friendly reply helps them stay.";
+    panel.appendChild(note);
+  }
 
   // The top line: a title, then the tone and the risk, each one in a coloured "pill"
   // (className gives a "colour label"; the colours themselves are in static/tone_coach.css)
@@ -118,6 +127,13 @@ function openConfirm(form, textarea, result) {
   var reasons = document.getElementById('tcConfirmReasons');
   reasons.replaceChildren();
   fillIssues(reasons, result);
+
+  // Welcome Buddy: if the reply to a newcomer sounds negative, say it in the window too
+  if (form.dataset.newcomerPost === '1' && result.tone === 'negative') {
+    var newcomerReason = document.createElement('li');
+    newcomerReason.textContent = '🌱 This is a new member. A harsh first reply can make them leave MiniSocial.';
+    reasons.appendChild(newcomerReason);
+  }
 
   // The "Before you post…" window, as a Bootstrap object
   var confirmEl = document.getElementById('tcConfirmModal');
@@ -235,7 +251,9 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         // Ask the brain and draw the answer in the panel
-        analyze(textarea.value).then(function (result) { showResult(panel, result); });
+        analyze(textarea.value).then(function (result) {
+          showResult(panel, result, form.dataset.newcomerPost === '1');
+        });
 
       }, 400);
     });
